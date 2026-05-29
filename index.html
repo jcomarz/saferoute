@@ -97,6 +97,20 @@
     border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
   .gpsbtn.busy{font-size:0}
   .gpsbtn.locked{color:var(--safe);border-color:var(--safe)}
+
+  /* address autocomplete dropdown */
+  .field{position:relative}
+  .acdrop{position:absolute;top:100%;left:0;right:0;z-index:40;margin-top:4px;
+    background:var(--bg2);border:1px solid var(--line);border-radius:10px;overflow:hidden;
+    box-shadow:0 14px 34px rgba(0,0,0,.5);max-height:300px;overflow-y:auto}
+  .acitem{padding:9px 12px;cursor:pointer;display:flex;flex-direction:column;gap:1px;
+    border-bottom:1px solid var(--line)}
+  .acitem:last-of-type{border-bottom:none}
+  .acitem.hi{background:var(--bg3)}
+  .acm{font-size:13px;color:var(--txt);line-height:1.3}
+  .acs{font-size:11px;color:var(--dim);line-height:1.3}
+  .acfoot{padding:5px 12px;font-size:9px;color:var(--faint);text-align:right;
+    letter-spacing:.5px;text-transform:uppercase;background:var(--bg)}
   .pin{width:18px;flex-shrink:0;text-align:center;font-size:13px}
   .pin.a{color:var(--accent)} .pin.b{color:var(--danger)}
 
@@ -287,6 +301,7 @@ let map, dirService, renderer, geometry, geocoder;
 let turnMarkers = [], routePolys = [], routes = [], selectedIdx = 0;
 let gasMarkers = [], gasInfo = null;
 let originCoords = null;        // set when "Use my location" is tapped; cleared on manual edit
+let destCoords   = null;        // set when a destination suggestion is picked
 let cfg = { side:'left', timew:0.4, roundabout:false };
 
 const SIGNAL_RADIUS = 35;       // metres: turn counts as "controlled" if a signal is this close
@@ -392,10 +407,6 @@ window.initApp = function(){
 
   // "Use my location"
   $('#gps').onclick = useMyLocation;
-  // if the user types in the origin, drop the GPS lock
-  $('#origin').addEventListener('input', ()=>{
-    originCoords=null; $('#gps').classList.remove('locked');
-  });
 
   // settings wiring
   document.querySelectorAll('#side button').forEach(b=>{
@@ -410,7 +421,17 @@ window.initApp = function(){
   $('#rndabt').onchange = e=> cfg.roundabout = e.target.checked;
   $('#go').onclick = run;
   $('#gasbtn').onclick = findGas;
-  ['origin','dest'].forEach(id=>$('#'+id).addEventListener('keydown',e=>{if(e.key==='Enter')run();}));
+
+  // address autocomplete on both fields (keeps GPS + Enter-to-route working)
+  attachAutocomplete($('#origin'), (place, text)=>{
+    originCoords = place.location || null;
+    $('#origin').value = text;
+    $('#gps').classList.toggle('locked', !!originCoords);
+  }, ()=>{ originCoords=null; $('#gps').classList.remove('locked'); });
+  attachAutocomplete($('#dest'), (place, text)=>{
+    destCoords = place.location || null;
+    $('#dest').value = text;
+  }, ()=>{ destCoords=null; });
 };
 
 /* ---------- use current location as the Start ---------- */
@@ -427,6 +448,7 @@ function useMyLocation(){
       btn.classList.remove('busy'); btn.classList.add('locked');
       $('#origin').value = (status==='OK'&&res[0]) ? res[0].formatted_address
         : `${p.coords.latitude.toFixed(5)}, ${p.coords.longitude.toFixed(5)}`;
+      if($('#origin')._acHide) $('#origin')._acHide();
       setStatus('Start set to your location.');
     });
   }, err=>{
@@ -434,6 +456,84 @@ function useMyLocation(){
     const m={1:'Location permission denied.',2:'Position unavailable.',3:'Location timed out.'};
     setStatus((m[err.code]||'Could not get location.')+' Needs HTTPS — host the file, don\'t open it as a local file.', true);
   }, {enableHighAccuracy:true, timeout:10000, maximumAge:30000});
+}
+
+/* ---------- address autocomplete (Places API New, themed custom dropdown) ---------- */
+let _acLib=null;
+async function acLib(){ return _acLib || (_acLib = await google.maps.importLibrary('places')); }
+
+function attachAutocomplete(input, onPick, onClear){
+  const field = input.closest('.field');
+  const drop = document.createElement('div');
+  drop.className='acdrop'; drop.style.display='none';
+  field.appendChild(drop);
+
+  let token=null, items=[], hi=-1, seq=0, debounce=null;
+  function hide(){ drop.style.display='none'; drop.innerHTML=''; items=[]; hi=-1; }
+  input._acHide = hide;
+
+  async function fetchSugg(text){
+    const my=++seq;
+    let lib; try{ lib=await acLib(); }catch(e){ return; }
+    if(!token) token=new lib.AutocompleteSessionToken();
+    const req={ input:text, sessionToken:token };
+    try{ const b=map&&map.getBounds&&map.getBounds(); if(b) req.locationBias=b; }catch(e){}
+    let suggestions=[];
+    try{ ({suggestions}=await lib.AutocompleteSuggestion.fetchAutocompleteSuggestions(req)); }
+    catch(e){ console.warn('autocomplete failed',e); return; }
+    if(my!==seq) return;                               // a newer keystroke superseded this
+    items=(suggestions||[]).map(s=>s.placePrediction).filter(Boolean);
+    render();
+  }
+  function render(){
+    if(!items.length){ hide(); return; }
+    drop.innerHTML='';
+    items.forEach((pp,i)=>{
+      const main=(pp.mainText&&pp.mainText.toString()) || (pp.text&&pp.text.toString()) || '';
+      const sec =(pp.secondaryText&&pp.secondaryText.toString()) || '';
+      const el=document.createElement('div');
+      el.className='acitem'+(i===hi?' hi':'');
+      el.innerHTML=`<span class="acm">${esc(main)}</span>${sec?`<span class="acs">${esc(sec)}</span>`:''}`;
+      el.addEventListener('mousedown',ev=>{ ev.preventDefault(); choose(i); });
+      el.addEventListener('mousemove',()=>{ hi=i; paint(); });
+      drop.appendChild(el);
+    });
+    const foot=document.createElement('div'); foot.className='acfoot'; foot.textContent='powered by Google';
+    drop.appendChild(foot);
+    drop.style.display='block';
+  }
+  function paint(){ [...drop.querySelectorAll('.acitem')].forEach((el,i)=>el.classList.toggle('hi',i===hi)); }
+
+  async function choose(i){
+    const pp=items[i]; if(!pp) return;
+    const fallback=(pp.text&&pp.text.toString()) || input.value;
+    hide();
+    let place=null;
+    try{ place=pp.toPlace(); await place.fetchFields({fields:['location','formattedAddress','displayName']}); }
+    catch(e){ console.warn('toPlace failed',e); }
+    onPick(place||{location:null}, (place&&place.formattedAddress) || fallback);
+    token=null;                                        // selection ends the billing session
+  }
+
+  input.addEventListener('input', ()=>{
+    if(onClear) onClear();
+    const t=input.value.trim();
+    clearTimeout(debounce);
+    if(t.length<2){ hide(); return; }
+    debounce=setTimeout(()=>fetchSugg(t), 250);
+  });
+  input.addEventListener('keydown', e=>{
+    const open = drop.style.display!=='none' && items.length;
+    if(e.key==='ArrowDown' && open){ e.preventDefault(); hi=(hi+1)%items.length; paint(); }
+    else if(e.key==='ArrowUp' && open){ e.preventDefault(); hi=(hi-1+items.length)%items.length; paint(); }
+    else if(e.key==='Enter'){
+      if(open){ e.preventDefault(); choose(hi>=0?hi:0); }   // pick highlighted (or top) result
+      else run();                                            // nothing open → route
+    }
+    else if(e.key==='Escape') hide();
+  });
+  input.addEventListener('blur', ()=> setTimeout(hide,150));
+  document.addEventListener('click', e=>{ if(!field.contains(e.target)) hide(); });
 }
 
 /* ---------- home-screen identity (single-file: icon + manifest built at runtime) ---------- */
@@ -479,9 +579,10 @@ function scrim(on,txt){ $('#scrim').classList.toggle('on',on); if(txt)$('#scrimt
 /* ---------- main run ---------- */
 async function run(){
   const originText = $('#origin').value.trim();
-  const dest   = $('#dest').value.trim();
-  if(!originText || !dest){ setStatus('Enter both a start and a destination.', true); return; }
-  const origin = originCoords || originText;   // exact GPS coords win over the typed label
+  const destText   = $('#dest').value.trim();
+  if(!originText || !destText){ setStatus('Enter both a start and a destination.', true); return; }
+  const origin = originCoords || originText;   // exact coords win over the typed label
+  const dest   = destCoords || destText;
   clearMap();
   $('#go').disabled=true; scrim(true,'Requesting routes…'); setStatus('');
 
