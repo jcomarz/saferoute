@@ -1,0 +1,937 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>SafeRoute — tricky-intersection router</title>
+<!-- install-as-app: Android/Chrome reads the (runtime-built) manifest; iOS reads these -->
+<meta name="theme-color" content="#0e1116">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="SafeRoute">
+<link id="appicon" rel="apple-touch-icon">
+<link id="favicon" rel="icon">
+<link id="manifest" rel="manifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0e1116; --bg2:#161b22; --bg3:#1c232d; --line:#2a323d;
+    --txt:#e6edf3; --dim:#8b97a6; --faint:#5b6675;
+    --safe:#3fb950; --caution:#e3a008; --danger:#f85149; --accent:#58a6ff;
+    --safe-d:rgba(63,185,80,.14); --caution-d:rgba(227,160,8,.14); --danger-d:rgba(248,81,73,.14);
+    --radius:10px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg);color:var(--txt);
+    font-family:"IBM Plex Sans",sans-serif;
+    -webkit-font-smoothing:antialiased;
+    display:flex;flex-direction:column;height:100vh;overflow:hidden;
+  }
+  .mono{font-family:"IBM Plex Mono",monospace}
+
+  /* ---------- key gate ---------- */
+  #gate{
+    position:fixed;inset:0;background:radial-gradient(120% 90% at 50% -10%,#1b2330 0%,var(--bg) 60%);
+    display:flex;align-items:center;justify-content:center;z-index:50;padding:24px;
+  }
+  .gate-card{
+    background:var(--bg2);border:1px solid var(--line);border-radius:16px;
+    padding:32px;max-width:520px;width:100%;
+    box-shadow:0 24px 60px rgba(0,0,0,.5);
+  }
+  .gate-card h1{font-size:22px;margin:0 0 4px;letter-spacing:-.3px}
+  .gate-card .sub{color:var(--dim);font-size:13.5px;line-height:1.55;margin:0 0 20px}
+  .gate-card label{display:block;font-size:12px;color:var(--dim);margin:0 0 6px;text-transform:uppercase;letter-spacing:.6px}
+  input[type=text],input[type=password]{
+    width:100%;background:var(--bg);border:1px solid var(--line);color:var(--txt);
+    border-radius:var(--radius);padding:12px 14px;font-size:14px;font-family:"IBM Plex Mono",monospace;
+    outline:none;transition:border-color .15s;
+  }
+  input:focus{border-color:var(--accent)}
+  .btn{
+    background:var(--accent);color:#06101f;border:none;border-radius:var(--radius);
+    padding:12px 18px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;
+    transition:filter .15s,transform .05s;
+  }
+  .btn:hover{filter:brightness(1.08)} .btn:active{transform:translateY(1px)}
+  .btn[disabled]{opacity:.5;cursor:not-allowed}
+  .btn-ghost{background:transparent;border:1px solid var(--line);color:var(--txt)}
+  .gate-help{margin-top:16px;font-size:12px;color:var(--faint);line-height:1.6}
+  .gate-help a{color:var(--accent);text-decoration:none}
+  .gate-help a:hover{text-decoration:underline}
+
+  /* ---------- header ---------- */
+  header{
+    display:flex;align-items:center;gap:14px;padding:12px 18px;
+    background:var(--bg2);border-bottom:1px solid var(--line);flex-shrink:0;
+  }
+  .logo{display:flex;align-items:center;gap:9px;font-weight:700;letter-spacing:-.3px;font-size:16px}
+  .logo .dot{width:10px;height:10px;border-radius:50%;background:var(--safe);box-shadow:0 0 0 4px var(--safe-d)}
+  header .tag{font-size:11px;color:var(--faint);font-family:"IBM Plex Mono",monospace;letter-spacing:.4px}
+  header .spacer{flex:1}
+  .linkbtn{background:none;border:none;color:var(--dim);font-size:12px;cursor:pointer;font-family:inherit}
+  .linkbtn:hover{color:var(--txt)}
+
+  /* ---------- layout ---------- */
+  main{flex:1;display:flex;min-height:0}
+  #panel{width:400px;flex-shrink:0;background:var(--bg);border-right:1px solid var(--line);
+    overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:14px}
+  #mapwrap{flex:1;position:relative;min-width:0}
+  #map{position:absolute;inset:0}
+
+  .field{display:flex;flex-direction:column;gap:6px}
+  .field label{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px}
+  .endpoint-row{display:flex;align-items:center;gap:9px}
+  .gpsbtn{flex-shrink:0;width:40px;height:42px;border:1px solid var(--line);background:var(--bg2);
+    border-radius:var(--radius);font-size:16px;cursor:pointer;color:var(--accent);
+    display:flex;align-items:center;justify-content:center;transition:.13s;line-height:1}
+  .gpsbtn:hover{border-color:var(--accent);background:var(--bg3)}
+  .gpsbtn:active{transform:translateY(1px)}
+  .gpsbtn.busy{color:var(--dim)}
+  .gpsbtn.busy::after{content:"";width:14px;height:14px;border:2px solid var(--line);
+    border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
+  .gpsbtn.busy{font-size:0}
+  .gpsbtn.locked{color:var(--safe);border-color:var(--safe)}
+  .pin{width:18px;flex-shrink:0;text-align:center;font-size:13px}
+  .pin.a{color:var(--accent)} .pin.b{color:var(--danger)}
+
+  .settings{background:var(--bg2);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+  .settings summary{padding:11px 14px;cursor:pointer;font-size:12.5px;color:var(--dim);
+    list-style:none;display:flex;align-items:center;gap:8px;user-select:none}
+  .settings summary::-webkit-details-marker{display:none}
+  .settings summary::before{content:"▸";font-size:10px;transition:transform .15s}
+  .settings[open] summary::before{transform:rotate(90deg)}
+  .settings .body{padding:4px 14px 14px;display:flex;flex-direction:column;gap:14px}
+  .setrow label{font-size:12px;color:var(--dim);display:block;margin-bottom:6px}
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{flex:1;background:var(--bg);border:none;color:var(--dim);padding:8px;font-size:11.5px;
+    cursor:pointer;font-family:inherit;transition:.12s}
+  .seg button.on{background:var(--accent);color:#06101f;font-weight:600}
+  input[type=range]{width:100%;accent-color:var(--accent)}
+  .rangelbls{display:flex;justify-content:space-between;font-size:10.5px;color:var(--faint);margin-top:2px}
+  .check{display:flex;align-items:center;gap:9px;font-size:12.5px;color:var(--dim);cursor:pointer}
+  .check input{accent-color:var(--accent);width:15px;height:15px}
+
+  #go{width:100%}
+  #status{font-size:12px;color:var(--dim);min-height:16px;font-family:"IBM Plex Mono",monospace}
+  #status.err{color:var(--danger)}
+
+  .legend{display:flex;flex-wrap:wrap;gap:10px 16px;font-size:11px;color:var(--dim);padding:2px 2px}
+  .legend span{display:flex;align-items:center;gap:6px}
+  .swatch{width:11px;height:11px;border-radius:3px}
+
+  /* route cards */
+  .results{display:flex;flex-direction:column;gap:10px}
+  .rcard{
+    background:var(--bg2);border:1px solid var(--line);border-radius:var(--radius);
+    padding:13px;cursor:pointer;transition:.13s;position:relative;
+  }
+  .rcard:hover{border-color:var(--faint)}
+  .rcard.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+  .rcard .top{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+  .rcard .name{font-weight:600;font-size:13.5px;display:flex;align-items:center;gap:8px}
+  .badge{font-size:10px;font-weight:600;padding:2px 7px;border-radius:20px;letter-spacing:.3px}
+  .badge.best{background:var(--safe-d);color:var(--safe)}
+  .rcard .eta{font-family:"IBM Plex Mono",monospace;font-size:13px;color:var(--txt)}
+  .rcard .eta .sm{color:var(--faint);font-size:11px}
+  .scorebar{height:6px;border-radius:4px;background:var(--bg);margin:11px 0 9px;overflow:hidden}
+  .scorebar i{display:block;height:100%;border-radius:4px}
+  .stats{display:flex;gap:14px;font-size:11.5px;color:var(--dim)}
+  .stats b{font-family:"IBM Plex Mono",monospace;color:var(--txt);font-weight:600}
+  .stats .danger b{color:var(--danger)} .stats .caution b{color:var(--caution)}
+
+  .detail{margin-top:11px;border-top:1px solid var(--line);padding-top:11px;display:none}
+  .rcard.sel .detail{display:block}
+  .turnlist{display:flex;flex-direction:column;gap:6px;max-height:200px;overflow-y:auto;margin-bottom:11px}
+  .turn{display:flex;align-items:center;gap:9px;font-size:11.5px;padding:5px 7px;border-radius:6px;background:var(--bg)}
+  .turn .ic{width:16px;text-align:center;flex-shrink:0}
+  .turn.bad{background:var(--danger-d)} .turn.bad .ic{color:var(--danger)}
+  .turn.mid{background:var(--caution-d)} .turn.mid .ic{color:var(--caution)}
+  .turn.ok .ic{color:var(--safe)}
+  .turn .t{flex:1;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .opengm{width:100%;text-align:center;text-decoration:none;display:block}
+
+  .empty{color:var(--faint);font-size:12.5px;text-align:center;padding:30px 10px;line-height:1.6}
+  .note{font-size:11px;color:var(--faint);line-height:1.5}
+  .scrim{position:absolute;inset:0;background:rgba(14,17,22,.6);display:none;
+    align-items:center;justify-content:center;z-index:5;color:var(--dim);font-size:13px;
+    font-family:"IBM Plex Mono",monospace}
+  .scrim.on{display:flex}
+  .spinner{width:16px;height:16px;border:2px solid var(--line);border-top-color:var(--accent);
+    border-radius:50%;animation:spin .7s linear infinite;margin-right:10px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* gas on route */
+  .gasblock{display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--line);padding-top:14px}
+  #gaslist{display:flex;flex-direction:column;gap:7px}
+  .gasrow{display:flex;align-items:center;justify-content:space-between;gap:10px;
+    background:var(--bg2);border:1px solid var(--line);border-radius:var(--radius);
+    padding:10px 12px;cursor:pointer;transition:.12s}
+  .gasrow:hover{border-color:#2dd4bf}
+  .gname{font-size:13px;font-weight:600;display:flex;align-items:center;gap:7px}
+  .rightpill{font-size:9.5px;font-weight:600;color:#2dd4bf;border:1px solid #2dd4bf;
+    border-radius:20px;padding:1px 6px;letter-spacing:.3px}
+  .gmeta{font-size:11px;color:var(--dim);margin-top:2px;font-family:"IBM Plex Mono",monospace}
+  .gprice{font-family:"IBM Plex Mono",monospace;font-size:15px;font-weight:600;color:#2dd4bf;white-space:nowrap}
+  .gprice .na{font-size:11px;color:var(--faint);font-weight:400}
+
+  @media(max-width:760px){
+    main{flex-direction:column} #panel{width:100%;border-right:none;border-bottom:1px solid var(--line);max-height:55%}
+    #mapwrap{min-height:240px}
+  }
+</style>
+</head>
+<body>
+
+<!-- ============ API KEY GATE ============ -->
+<div id="gate">
+  <div class="gate-card">
+    <h1>SafeRoute</h1>
+    <p class="sub">Finds the driving route with the fewest <b>tricky intersections</b> — penalising unprotected left turns (turns across oncoming traffic) and U-turns, and rewarding turns that happen at traffic signals.</p>
+    <div class="field" style="margin-bottom:14px">
+      <label for="keyin">Google Maps Platform API key</label>
+      <input id="keyin" type="password" placeholder="AIza…" autocomplete="off" spellcheck="false">
+    </div>
+    <button class="btn" id="keygo" style="width:100%">Load map</button>
+    <div class="gate-help">
+      Needs a key with <b>Maps JavaScript API</b>, <b>Directions API</b> and <b>Places API (New)</b> enabled (billing on). Stored only in this browser (localStorage), never committed or sent anywhere but Google.
+      <br>Get one at <a href="https://console.cloud.google.com/google/maps-apis" target="_blank" rel="noopener">Google Cloud Console</a>.
+      <br><br>Traffic-signal data comes from OpenStreetMap (Overpass API) — free, no key.
+    </div>
+    <div class="gate-help" id="referhint" style="display:none"></div>
+  </div>
+</div>
+
+<!-- ============ APP ============ -->
+<header style="display:none" id="hdr">
+  <div class="logo"><span class="dot"></span>SafeRoute</div>
+  <span class="tag">tricky-intersection router</span>
+  <span class="spacer"></span>
+  <button class="linkbtn" id="changekey">change key</button>
+</header>
+
+<main style="display:none" id="app">
+  <section id="panel">
+    <div class="field">
+      <label>Start</label>
+      <div class="endpoint-row"><span class="pin a">●</span>
+        <input id="origin" type="text" placeholder="Address or place">
+        <button id="gps" class="gpsbtn" title="Use my current location">📍</button></div>
+    </div>
+    <div class="field">
+      <label>Destination</label>
+      <div class="endpoint-row"><span class="pin b">◎</span>
+        <input id="dest" type="text" placeholder="Address or place"></div>
+    </div>
+
+    <details class="settings">
+      <summary>Preferences</summary>
+      <div class="body">
+        <div class="setrow">
+          <label>Traffic side (which turn crosses oncoming traffic)</label>
+          <div class="seg" id="side">
+            <button data-side="left" class="on">Right-hand · avoid LEFT turns</button>
+            <button data-side="right">Left-hand · avoid RIGHT</button>
+          </div>
+        </div>
+        <div class="setrow">
+          <label>Safety vs. speed — <span id="twlbl" class="mono">balanced</span></label>
+          <input type="range" id="timew" min="0" max="100" value="40">
+          <div class="rangelbls"><span>Fastest route</span><span>Safest route</span></div>
+        </div>
+        <label class="check"><input type="checkbox" id="rndabt"> Also avoid roundabouts</label>
+        <p class="note">A turn is treated as “controlled” if a traffic signal sits within ~35 m of it.</p>
+      </div>
+    </details>
+
+    <button class="btn" id="go">Find safest route</button>
+    <div id="status"></div>
+
+    <div class="legend">
+      <span><i class="swatch" style="background:var(--danger)"></i>Unprotected turn</span>
+      <span><i class="swatch" style="background:var(--caution)"></i>U-turn</span>
+      <span><i class="swatch" style="background:var(--safe)"></i>Signal-controlled</span>
+    </div>
+
+    <div class="results" id="results">
+      <div class="empty">Enter a start and destination, then hit <b>Find safest route</b>.<br>You'll get every alternative ranked by how many tricky intersections it forces on you.</div>
+    </div>
+
+    <div class="gasblock" id="gasblock" style="display:none">
+      <button class="btn btn-ghost" id="gasbtn">⛽ Find gas on this route — right side only</button>
+      <p class="note">Live fuel prices from Google (premium data — a small per-search cost). Only shows stations you can pull into without crossing oncoming traffic.</p>
+      <div id="gaslist"></div>
+    </div>
+  </section>
+
+  <div id="mapwrap">
+    <div id="map"></div>
+    <div class="scrim" id="scrim"><span class="spinner"></span><span id="scrimtxt">Routing…</span></div>
+  </div>
+</main>
+
+<script>
+/* ============================================================
+   SafeRoute — single file. No build step.
+   Pipeline: DirectionsService (alternatives) → parse maneuvers →
+   Overpass traffic_signals → score → rank → render + GMaps deep link.
+   ============================================================ */
+
+const LS_KEY = 'saferoute.gmapskey';
+let map, dirService, renderer, geometry, geocoder;
+let turnMarkers = [], routePolys = [], routes = [], selectedIdx = 0;
+let gasMarkers = [], gasInfo = null;
+let originCoords = null;        // set when "Use my location" is tapped; cleared on manual edit
+let cfg = { side:'left', timew:0.4, roundabout:false };
+
+const SIGNAL_RADIUS = 35;       // metres: turn counts as "controlled" if a signal is this close
+const WEIGHTS = {
+  uncontrolledTurn: 5,          // hard-side turn with no nearby signal
+  controlledTurn:   1,          // hard-side turn at a signal
+  uturnUncontrolled:10,
+  uturnControlled:  4,
+  roundabout:       3,          // only applied if user opts in
+  perMinute:        1           // scaled by the safety/speed slider
+};
+
+/* ---------- key gate ---------- */
+const $ = s => document.querySelector(s);
+const IS_FILE = location.protocol === 'file:';
+window.addEventListener('DOMContentLoaded', () => {
+  if(IS_FILE){
+    const b=document.createElement('div');
+    b.style.cssText='background:var(--danger-d);border:1px solid var(--danger);color:#ffb3ae;'
+      +'border-radius:10px;padding:12px 14px;font-size:12.5px;line-height:1.55;margin:0 0 18px';
+    b.innerHTML='⚠️ <b>You\u2019re opening this as a local file</b> (file://). Google will reject the API key with '
+      +'<span class="mono">InvalidKeyMapError</span> because a file:// page has no valid origin. '
+      +'Serve it over http instead \u2014 e.g. run <span class="mono">python -m http.server</span> in this folder '
+      +'and open <span class="mono">http://localhost:8000/safe-route.html</span>, or drop it on '
+      +'<a href="https://app.netlify.com/drop" target="_blank" rel="noopener" style="color:#58a6ff">Netlify Drop</a> for an https URL.';
+    const card=document.querySelector('.gate-card');
+    card.insertBefore(b, card.querySelector('.field'));
+  } else {
+    // show the exact HTTP-referrer pattern to lock the key to on this host
+    const pattern = location.origin + location.pathname.replace(/[^/]*$/, '') + '*';
+    const h=$('#referhint'); h.style.display='block';
+    h.innerHTML = '🔒 <b>Secure this key for this site.</b> In Cloud Console → your key → '
+      + 'Application restrictions → <i>HTTP referrers</i>, add:<br>'
+      + '<span class="mono" style="color:#58a6ff;word-break:break-all">'+pattern+'</span><br>'
+      + 'Then under API restrictions, allow only <b>Maps JavaScript API</b>, <b>Directions API</b>, <b>Places API (New)</b>. '
+      + 'The key stays visible in browser requests no matter what \u2014 the referrer restriction is what actually protects it.';
+  }
+  const saved = localStorage.getItem(LS_KEY);
+  $('#keyin').value = saved || '';
+  $('#keygo').onclick = () => {
+    const k = $('#keyin').value.trim();
+    if(!k){ $('#keyin').focus(); return; }
+    localStorage.setItem(LS_KEY, k);
+    bootMaps(k);
+  };
+  $('#keyin').addEventListener('keydown', e=>{ if(e.key==='Enter') $('#keygo').click(); });
+  $('#changekey').onclick = () => {
+    localStorage.removeItem(LS_KEY);
+    location.reload();
+  };
+  if(saved) bootMaps(saved);
+});
+
+/* Google calls this if the key is bad / API not enabled */
+window.gm_authFailure = () => {
+  $('#gate').style.display='flex';
+  $('#app').style.display='none'; $('#hdr').style.display='none';
+  if(IS_FILE){
+    setStatus('Key rejected — almost certainly because you\u2019re running from file://. Serve over http (see the banner above).', true);
+    alert('Google rejected the key (InvalidKeyMapError).\n\nThe likely cause: you opened this as a local file (file://), which has no valid origin for Google to authorise.\n\nFix: serve it over http —\n  python -m http.server 8000\nthen open http://localhost:8000/safe-route.html\n\n(or host on Netlify Drop for an https URL).');
+    return;
+  }
+  setStatus('Key rejected — check the key and that Maps JavaScript API + Directions are enabled with billing.', true);
+  alert('Google rejected this API key.\n\nMost common causes:\n• Maps JavaScript API not enabled (separate from Directions/Places)\n• The key\u2019s API restrictions don\u2019t include Maps JavaScript API\n• An HTTP-referrer restriction that doesn\u2019t match this page\u2019s URL\n• Billing not enabled for the project\n\nQuick test: in Cloud Console set the key\u2019s Application restriction = None and API restrictions = Don\u2019t restrict, reload, then re-tighten once it works.');
+};
+
+function bootMaps(key){
+  if(window.google && window.google.maps){ initApp(); return; }
+  const s = document.createElement('script');
+  s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&libraries=geometry,places&callback=initApp&loading=async`;
+  s.async = true;
+  s.onerror = () => alert('Could not load Google Maps script — check your connection / key.');
+  document.head.appendChild(s);
+}
+
+/* ---------- init ---------- */
+window.initApp = function(){
+  $('#gate').style.display='none';
+  $('#hdr').style.display='flex';
+  $('#app').style.display='flex';
+
+  map = new google.maps.Map($('#map'), {
+    center:{lat:40.7128,lng:-74.006}, zoom:12,
+    disableDefaultUI:true, zoomControl:true, gestureHandling:'greedy',
+    styles: DARK_STYLE
+  });
+  dirService = new google.maps.DirectionsService();
+  renderer = new google.maps.DirectionsRenderer({
+    map, suppressMarkers:false, preserveViewport:false,
+    polylineOptions:{ strokeColor:'#58a6ff', strokeWeight:6, strokeOpacity:.9 }
+  });
+  geometry = google.maps.geometry.spherical;
+  geocoder = new google.maps.Geocoder();
+
+  buildAppIdentity();   // home-screen icon + manifest
+
+  // try to place user near their location
+  if(navigator.geolocation){
+    navigator.geolocation.getCurrentPosition(p=>{
+      map.setCenter({lat:p.coords.latitude,lng:p.coords.longitude});
+    }, ()=>{}, {timeout:4000});
+  }
+
+  // "Use my location"
+  $('#gps').onclick = useMyLocation;
+  // if the user types in the origin, drop the GPS lock
+  $('#origin').addEventListener('input', ()=>{
+    originCoords=null; $('#gps').classList.remove('locked');
+  });
+
+  // settings wiring
+  document.querySelectorAll('#side button').forEach(b=>{
+    b.onclick=()=>{ document.querySelectorAll('#side button').forEach(x=>x.classList.remove('on'));
+      b.classList.add('on'); cfg.side=b.dataset.side; };
+  });
+  $('#timew').oninput = e=>{
+    cfg.timew = e.target.value/100;
+    const v=e.target.value;
+    $('#twlbl').textContent = v<20?'prioritise speed':v<45?'balanced':v<75?'favour safety':'safety first';
+  };
+  $('#rndabt').onchange = e=> cfg.roundabout = e.target.checked;
+  $('#go').onclick = run;
+  $('#gasbtn').onclick = findGas;
+  ['origin','dest'].forEach(id=>$('#'+id).addEventListener('keydown',e=>{if(e.key==='Enter')run();}));
+};
+
+/* ---------- use current location as the Start ---------- */
+function useMyLocation(){
+  if(!navigator.geolocation){ setStatus('This browser has no geolocation.', true); return; }
+  const btn=$('#gps'); btn.classList.add('busy'); btn.classList.remove('locked');
+  setStatus('Locating…');
+  navigator.geolocation.getCurrentPosition(p=>{
+    const ll=new google.maps.LatLng(p.coords.latitude,p.coords.longitude);
+    originCoords=ll;                      // exact coords used for routing
+    map.panTo(ll);
+    // reverse-geocode just for a friendly label in the box
+    geocoder.geocode({location:ll},(res,status)=>{
+      btn.classList.remove('busy'); btn.classList.add('locked');
+      $('#origin').value = (status==='OK'&&res[0]) ? res[0].formatted_address
+        : `${p.coords.latitude.toFixed(5)}, ${p.coords.longitude.toFixed(5)}`;
+      setStatus('Start set to your location.');
+    });
+  }, err=>{
+    btn.classList.remove('busy');
+    const m={1:'Location permission denied.',2:'Position unavailable.',3:'Location timed out.'};
+    setStatus((m[err.code]||'Could not get location.')+' Needs HTTPS — host the file, don\'t open it as a local file.', true);
+  }, {enableHighAccuracy:true, timeout:10000, maximumAge:30000});
+}
+
+/* ---------- home-screen identity (single-file: icon + manifest built at runtime) ---------- */
+function buildAppIdentity(){
+  // draw a simple icon on a canvas → PNG data URL (works for iOS apple-touch-icon + Android manifest)
+  const make=(size)=>{
+    const c=document.createElement('canvas'); c.width=c.height=size;
+    const x=c.getContext('2d');
+    x.fillStyle='#0e1116'; x.fillRect(0,0,size,size);
+    // signal-green dot with halo
+    const cx=size/2, cy=size/2, r=size*0.17;
+    x.fillStyle='rgba(63,185,80,.18)'; x.beginPath(); x.arc(cx,cy,r*2.1,0,7); x.fill();
+    x.fillStyle='#3fb950'; x.beginPath(); x.arc(cx,cy,r,0,7); x.fill();
+    // route stroke
+    x.strokeStyle='#58a6ff'; x.lineWidth=size*0.06; x.lineCap='round';
+    x.beginPath(); x.moveTo(size*0.24,size*0.74);
+    x.quadraticCurveTo(size*0.5,size*0.62,cx,cy); x.stroke();
+    return c.toDataURL('image/png');
+  };
+  const icon192=make(192), icon512=make(512);
+  $('#appicon').href=icon192;
+  $('#favicon').href=make(64);
+
+  // a manifest only makes sense (and only validates) on a real http(s) origin
+  if(IS_FILE) return;
+  const dir = location.href.replace(/[^/]*$/, '');
+  const manifest={
+    name:'SafeRoute', short_name:'SafeRoute',
+    start_url:location.href, scope:dir, display:'standalone',
+    background_color:'#0e1116', theme_color:'#0e1116',
+    icons:[
+      {src:icon192,sizes:'192x192',type:'image/png',purpose:'any maskable'},
+      {src:icon512,sizes:'512x512',type:'image/png',purpose:'any maskable'}
+    ]
+  };
+  const blob=new Blob([JSON.stringify(manifest)],{type:'application/manifest+json'});
+  $('#manifest').href=URL.createObjectURL(blob);
+}
+
+function setStatus(t, err){ const s=$('#status'); s.textContent=t||''; s.classList.toggle('err',!!err); }
+function scrim(on,txt){ $('#scrim').classList.toggle('on',on); if(txt)$('#scrimtxt').textContent=txt; }
+
+/* ---------- main run ---------- */
+async function run(){
+  const originText = $('#origin').value.trim();
+  const dest   = $('#dest').value.trim();
+  if(!originText || !dest){ setStatus('Enter both a start and a destination.', true); return; }
+  const origin = originCoords || originText;   // exact GPS coords win over the typed label
+  clearMap();
+  $('#go').disabled=true; scrim(true,'Requesting routes…'); setStatus('');
+
+  let res;
+  try{
+    res = await routeAsync({ origin, destination:dest, travelMode:'DRIVING',
+      provideRouteAlternatives:true,
+      drivingOptions:{ departureTime:new Date() } });
+  }catch(err){
+    $('#go').disabled=false; scrim(false);
+    setStatus(directionsErr(err), true); return;
+  }
+
+  routes = res.routes.map((r,i)=>analyzeRoute(r,i));
+
+  // collect hard turns for one Overpass lookup
+  scrim(true,'Checking traffic signals (OpenStreetMap)…');
+  const allTurns = routes.flatMap(r=>r.turns);
+  let signals = [];
+  if(allTurns.length){
+    try{ signals = await fetchSignals(allTurns); }
+    catch(e){ console.warn('Overpass failed',e); }
+  }
+  const signalsOK = signals.length>0 || allTurns.length===0;
+
+  // annotate + score
+  routes.forEach(r=>{
+    r.turns.forEach(t=>{
+      t.controlled = signals.length ? nearestWithin(t.pos, signals, SIGNAL_RADIUS) : false;
+      t.signalsKnown = signals.length>0;
+    });
+    scoreRoute(r);
+  });
+
+  // safety component + time penalty (time scaled by slider)
+  const fastest = Math.min(...routes.map(r=>r.durSec));
+  routes.forEach(r=>{
+    const extraMin = (r.durSec - fastest)/60;
+    r.total = r.safety + WEIGHTS.perMinute * extraMin * cfg.timew * 4; // *4 makes slider meaningful
+  });
+  routes.sort((a,b)=> a.total-b.total);
+  routes.forEach((r,i)=> r.rank=i);
+  selectedIdx = 0;
+
+  $('#go').disabled=false; scrim(false);
+  setStatus(signalsOK ? `${routes.length} route${routes.length>1?'s':''} analysed.`
+                      : `${routes.length} route(s) analysed · signal data unavailable, scored by turn type only.`,
+            !signalsOK && false);
+  renderResults();
+  selectRoute(0);
+}
+
+function routeAsync(req){
+  return new Promise((resolve,reject)=>{
+    dirService.route(req,(r,status)=>{
+      if(status==='OK') resolve(r); else reject(status);
+    });
+  });
+}
+function directionsErr(s){
+  const m={ ZERO_RESULTS:'No driving route found between those points.',
+    NOT_FOUND:'Could not locate one of the addresses — try being more specific.',
+    REQUEST_DENIED:'Request denied — enable the Directions API for this key (and billing).',
+    OVER_QUERY_LIMIT:'Quota exceeded — check billing / quotas in Google Cloud.',
+    INVALID_REQUEST:'Invalid request.' };
+  return m[s] || ('Routing failed: '+s);
+}
+
+/* ---------- analysis ---------- */
+function analyzeRoute(route,i){
+  const leg = route.legs[0];
+  const turns = [];
+  leg.steps.forEach(step=>{
+    const mv = step.maneuver; // e.g. "turn-left","uturn-left","roundabout-left"
+    if(!mv) return;
+    const kind = classify(mv);
+    if(!kind) return;
+    turns.push({
+      kind, maneuver:mv,
+      pos: step.start_location,
+      text: stripHtml(step.instructions||'').slice(0,80)
+    });
+  });
+  return {
+    route, idx:i, leg, turns,
+    durSec: (leg.duration_in_traffic||leg.duration).value,
+    durTxt: (leg.duration_in_traffic||leg.duration).text,
+    distTxt: leg.distance.text
+  };
+}
+
+/* returns 'hard' (turn across oncoming) | 'uturn' | 'roundabout' | null(=ignore) */
+function classify(mv){
+  const hardSide = cfg.side; // 'left' => left turns are the dangerous ones
+  if(mv === 'uturn-'+hardSide || mv==='uturn-left' || mv==='uturn-right'){
+    // any u-turn is risky; but the across-traffic one most of all
+    return 'uturn';
+  }
+  if(mv === 'roundabout-left' || mv === 'roundabout-right') return cfg.roundabout ? 'roundabout' : null;
+  if(mv === 'turn-'+hardSide || mv === 'turn-sharp-'+hardSide || mv === 'turn-slight-'+hardSide){
+    return 'hard';
+  }
+  return null; // straight, easy-side turns, merges, ramps, forks → not penalised
+}
+
+function scoreRoute(r){
+  let s=0, unprot=0, uturn=0, ctrl=0;
+  r.turns.forEach(t=>{
+    if(t.kind==='uturn'){ s += t.controlled?WEIGHTS.uturnControlled:WEIGHTS.uturnUncontrolled; uturn++; }
+    else if(t.kind==='hard'){ if(t.controlled){ s+=WEIGHTS.controlledTurn; ctrl++; } else { s+=WEIGHTS.uncontrolledTurn; unprot++; } }
+    else if(t.kind==='roundabout'){ s+=WEIGHTS.roundabout; }
+  });
+  r.safety=s; r.unprot=unprot; r.uturns=uturn; r.ctrl=ctrl;
+}
+
+/* ---------- Overpass: traffic_signals near the turn cluster ---------- */
+async function fetchSignals(turns){
+  let minLat=90,maxLat=-90,minLng=180,maxLng=-180;
+  turns.forEach(t=>{ const la=t.pos.lat(),ln=t.pos.lng();
+    minLat=Math.min(minLat,la);maxLat=Math.max(maxLat,la);
+    minLng=Math.min(minLng,ln);maxLng=Math.max(maxLng,ln); });
+  const pad=0.003; // ~300m
+  const bbox=`${minLat-pad},${minLng-pad},${maxLat+pad},${maxLng+pad}`;
+  const q=`[out:json][timeout:25];node["highway"="traffic_signals"](${bbox});out;`;
+  const mirrors=['https://overpass-api.de/api/interpreter',
+                 'https://overpass.kumi.systems/api/interpreter',
+                 'https://overpass.private.coffee/api/interpreter'];
+  for(const url of mirrors){
+    try{
+      const ctl=new AbortController(); const to=setTimeout(()=>ctl.abort(),18000);
+      const resp=await fetch(url,{method:'POST',body:'data='+encodeURIComponent(q),
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},signal:ctl.signal});
+      clearTimeout(to);
+      if(!resp.ok) continue;
+      const j=await resp.json();
+      return (j.elements||[]).map(e=>({lat:e.lat,lng:e.lon}));
+    }catch(e){ /* try next mirror */ }
+  }
+  throw new Error('all Overpass mirrors failed');
+}
+function nearestWithin(pos, pts, metres){
+  for(const p of pts){
+    if(geometry.computeDistanceBetween(pos, new google.maps.LatLng(p.lat,p.lng)) <= metres) return true;
+  }
+  return false;
+}
+
+/* ---------- render ---------- */
+function renderResults(){
+  const el=$('#results'); el.innerHTML='';
+  const worst=Math.max(1,...routes.map(r=>r.safety));
+  routes.forEach((r,i)=>{
+    const pct=Math.min(100, (r.safety/worst)*100);
+    const col = r.safety===0?'var(--safe)': pct<40?'var(--caution)':'var(--danger)';
+    const card=document.createElement('div');
+    card.className='rcard'+(i===selectedIdx?' sel':'');
+    card.innerHTML=`
+      <div class="top">
+        <div class="name">Route ${i+1}${i===0?'<span class="badge best">RECOMMENDED</span>':''}</div>
+        <div class="eta">${r.durTxt}<span class="sm"> · ${r.distTxt}</span></div>
+      </div>
+      <div class="scorebar"><i style="width:${Math.max(4,pct)}%;background:${col}"></i></div>
+      <div class="stats">
+        <span class="danger">unprotected <b>${r.unprot}</b></span>
+        <span class="caution">U-turns <b>${r.uturns}</b></span>
+        <span>at signals <b>${r.ctrl}</b></span>
+      </div>
+      <div class="detail">
+        ${r.turns.length? '<div class="turnlist">'+r.turns.map(turnRow).join('')+'</div>'
+          : '<p class="note" style="margin:0 0 11px">No left turns or U-turns on this route — clean run.</p>'}
+        <a class="btn opengm" target="_blank" rel="noopener" href="${gmapsLink(r)}">Open in Google Maps ↗</a>
+      </div>`;
+    card.onclick=(e)=>{ if(e.target.closest('.opengm'))return; selectRoute(i); };
+    el.appendChild(card);
+  });
+}
+function turnRow(t){
+  let cls,ic,label;
+  if(t.kind==='uturn'){ cls='mid'; ic='↩'; label='U-turn'; }
+  else if(t.kind==='roundabout'){ cls='ok'; ic='◯'; label='Roundabout'; }
+  else { // hard
+    if(t.signalsKnown && t.controlled){ cls='ok'; ic='✓'; label='Turn at signal'; }
+    else { cls='bad'; ic='✕'; label= t.signalsKnown?'Unprotected turn':'Turn (signal unknown)'; }
+  }
+  return `<div class="turn ${cls}"><span class="ic">${ic}</span><span class="t" title="${esc(t.text)}">${label} — ${esc(t.text)}</span></div>`;
+}
+
+function selectRoute(i){
+  selectedIdx=i;
+  document.querySelectorAll('.rcard').forEach((c,j)=>c.classList.toggle('sel',j===i));
+  const r=routes[i];
+  renderer.setDirections(r.route._raw || r.rawResponse || fakeWrap(r));
+  // draw markers on this route's tricky turns
+  turnMarkers.forEach(m=>m.setMap(null)); turnMarkers=[];
+  r.turns.forEach(t=>{
+    let color;
+    if(t.kind==='uturn') color='#e3a008';
+    else if(t.kind==='roundabout') color='#3fb950';
+    else color = (t.signalsKnown&&t.controlled)?'#3fb950':'#f85149';
+    const mk=new google.maps.Marker({position:t.pos,map,
+      icon:{path:google.maps.SymbolPath.CIRCLE,scale:6,fillColor:color,fillOpacity:1,strokeColor:'#0e1116',strokeWeight:2},
+      zIndex:999});
+    turnMarkers.push(mk);
+  });
+  // gas results belong to a specific route — reset when the selection changes
+  clearGas();
+  $('#gasblock').style.display='block';
+}
+
+/* renderer needs a full DirectionsResult; we kept the original — wrap a single route */
+function fakeWrap(r){
+  return { routes:[r.route], request:{travelMode:'DRIVING'} };
+}
+
+/* Google Maps deep link, nudged with mid-route waypoints so it reproduces THIS route */
+function gmapsLink(r){
+  const leg=r.leg;
+  const o=leg.start_location, d=leg.end_location;
+  const path=r.route.overview_path||[];
+  const wps=[];
+  if(path.length>6){
+    [Math.floor(path.length*0.33), Math.floor(path.length*0.66)].forEach(idx=>{
+      wps.push(`${path[idx].lat().toFixed(6)},${path[idx].lng().toFixed(6)}`);
+    });
+  }
+  let u=`https://www.google.com/maps/dir/?api=1`
+      +`&origin=${o.lat().toFixed(6)},${o.lng().toFixed(6)}`
+      +`&destination=${d.lat().toFixed(6)},${d.lng().toFixed(6)}`
+      +`&travelmode=driving`;
+  if(wps.length) u+=`&waypoints=${encodeURIComponent(wps.join('|'))}`;
+  return u;
+}
+
+/* ---------- utils ---------- */
+function clearMap(){
+  turnMarkers.forEach(m=>m.setMap(null)); turnMarkers=[];
+  renderer.set('directions',null);
+  clearGas();
+  $('#gasblock').style.display='none';
+}
+
+/* ============================================================
+   GAS ON ROUTE — right-side-only, with live Google fuel prices
+   ============================================================ */
+function clearGas(){
+  gasMarkers.forEach(m=>m.setMap(null)); gasMarkers=[];
+  if(gasInfo) gasInfo.close();
+  $('#gaslist').innerHTML='';
+}
+
+async function findGas(){
+  if(!routes.length) return;
+  const r = routes[selectedIdx];
+  const path = r.route.overview_path;
+  if(!path || path.length<2){ setStatus('No route geometry to search.', true); return; }
+
+  clearGas();
+  const btn=$('#gasbtn'); btn.disabled=true; scrim(true,'Finding gas stations…'); setStatus('');
+
+  // cumulative distance table for the route
+  const cum=[0];
+  for(let k=1;k<path.length;k++) cum[k]=cum[k-1]+geometry.computeDistanceBetween(path[k-1],path[k]);
+  const total=cum[cum.length-1];
+
+  // evenly spaced search centres along the route (cap the count to control cost)
+  const STEP=8000, MAXP=12;
+  const n=Math.min(MAXP, Math.max(1, Math.ceil(total/STEP)));
+  const centers=[];
+  for(let s=0;s<n;s++) centers.push(pointAtDist(path,cum,total*((s+0.5)/n)));
+
+  let Place, RankPref;
+  try{
+    const lib=await google.maps.importLibrary('places');
+    Place=lib.Place; RankPref=lib.SearchNearbyRankPreference;
+  }catch(e){ btn.disabled=false; scrim(false);
+    setStatus('Places library failed to load.', true); return; }
+
+  // 1) cheap candidate sweep (basic fields only)
+  const seen=new Map();
+  try{
+    for(const c of centers){
+      const {places}=await Place.searchNearby({
+        fields:['id','displayName','location'],
+        locationRestriction:{center:c, radius:3000},
+        includedTypes:['gas_station'],
+        maxResultCount:20,
+        rankPreference:RankPref.DISTANCE
+      });
+      (places||[]).forEach(p=>{ if(!seen.has(p.id)) seen.set(p.id,p); });
+    }
+  }catch(e){
+    btn.disabled=false; scrim(false);
+    setStatus('Gas search failed — make sure Places API (New) is enabled for this key.', true);
+    console.warn(e); return;
+  }
+
+  // 2) keep only the ones on the enterable side, close to the route
+  const wantRight = (cfg.side==='left');   // right-hand traffic → enter on the right
+  const MAXOFF=320;                        // metres off the route
+  let cands=[];
+  seen.forEach(p=>{
+    if(!p.location) return;
+    const g=sideAndDist(path,cum,p.location);
+    const correct = wantRight ? g.side==='right' : g.side==='left';
+    if(g.off<=MAXOFF && correct) cands.push({place:p, ...g});
+  });
+  cands.sort((a,b)=>a.along-b.along);
+  cands=cands.slice(0,12);                  // cap pricey detail lookups
+
+  if(!cands.length){
+    btn.disabled=false; scrim(false);
+    setStatus('No gas on the correct side within ~320 m of this route.');
+    $('#gaslist').innerHTML='<div class="empty">Nothing on the right side near this route. Try another alternative route.</div>';
+    return;
+  }
+
+  // 3) fetch live prices (premium field) only for survivors
+  scrim(true,'Fetching live fuel prices…');
+  for(const c of cands){
+    try{ await c.place.fetchFields({fields:['displayName','formattedAddress','fuelOptions','rating','googleMapsURI','location']}); }
+    catch(e){ console.warn('detail fail',e); }
+  }
+
+  btn.disabled=false; scrim(false);
+  const priced=cands.filter(c=>bestFuel(c.place.fuelOptions)).length;
+  setStatus(`${cands.length} station(s) on the right · ${priced} with live prices.`);
+  renderGas(cands);
+}
+
+/* point a given distance along the polyline */
+function pointAtDist(path,cum,d){
+  for(let k=1;k<path.length;k++){
+    if(cum[k]>=d){
+      const seg=cum[k]-cum[k-1], f=seg?(d-cum[k-1])/seg:0;
+      return geometry.interpolate(path[k-1],path[k],f);
+    }
+  }
+  return path[path.length-1];
+}
+
+/* which side of the direction of travel a point sits on + how far off-route + distance along */
+function sideAndDist(path,cum,loc){
+  let bi=0,bd=Infinity;
+  for(let k=0;k<path.length;k++){
+    const dd=geometry.computeDistanceBetween(path[k],loc);
+    if(dd<bd){bd=dd;bi=k;}
+  }
+  let a=path[bi], b=path[Math.min(bi+1,path.length-1)];
+  if(bi===path.length-1 && bi>0){ a=path[bi-1]; b=path[bi]; }
+  const travel=geometry.computeHeading(a,b);          // direction of travel
+  const toPt  =geometry.computeHeading(path[bi],loc); // toward the station
+  let rel=toPt-travel; while(rel>180)rel-=360; while(rel<-180)rel+=360;
+  return { side: rel>=0?'right':'left', off:bd, along:cum[bi] };
+}
+
+function bestFuel(fo){
+  if(!fo || !fo.fuelPrices || !fo.fuelPrices.length) return null;
+  const order=['REGULAR_UNLEADED','MIDGRADE','PREMIUM','DIESEL'];
+  let pick=null;
+  for(const t of order){ pick=fo.fuelPrices.find(f=>String(f.type)===t); if(pick)break; }
+  return moneyLabel(pick||fo.fuelPrices[0]);
+}
+function moneyLabel(fp){
+  if(!fp) return null;
+  const m=fp.price||fp;
+  const units=Number(m.units!=null?m.units:0), nanos=Number(m.nanos||0);
+  const val=units+nanos/1e9, cur=m.currencyCode||'USD';
+  const sym=({USD:'$',EUR:'€',GBP:'£',CAD:'$',AUD:'$'})[cur]||'';
+  return { value:val, label:`${sym}${val.toFixed(2)}`,
+           type:String(fp.type||'').replace(/_/g,' ').toLowerCase(), cur };
+}
+
+function renderGas(cands){
+  const el=$('#gaslist'); el.innerHTML='';
+  cands.forEach(c=>{
+    const p=c.place, price=bestFuel(p.fuelOptions);
+    const name=p.displayName||'Gas station';
+    const miIn=(c.along/1609.34).toFixed(1), ftOff=Math.round(c.off*3.281);
+    const row=document.createElement('div'); row.className='gasrow';
+    row.innerHTML=`
+      <div class="gleft">
+        <div class="gname">${esc(name)} <span class="rightpill">▸ RIGHT</span></div>
+        <div class="gmeta">${miIn} mi in · ${ftOff} ft off${p.rating?` · ★${p.rating}`:''}</div>
+      </div>
+      <div class="gprice">${price? esc(price.label) : '<span class="na">n/a</span>'}</div>`;
+    row.onclick=()=>focusGas(c);
+    el.appendChild(row);
+    addGasMarker(c, price);
+  });
+}
+
+function addGasMarker(c, price){
+  const p=c.place;
+  const mk=new google.maps.Marker({position:p.location, map,
+    icon:{path:google.maps.SymbolPath.CIRCLE,scale:7,fillColor:'#2dd4bf',fillOpacity:1,strokeColor:'#06120a',strokeWeight:2},
+    label: price?{text:price.label,color:'#0e1116',fontSize:'10px',fontWeight:'700'}:undefined,
+    title:(p.displayName||'Gas')+(price?` — ${price.label}`:''), zIndex:500});
+  mk.addListener('click',()=>openGasInfo(c,mk));
+  c._marker=mk; gasMarkers.push(mk);
+}
+function focusGas(c){ if(c.place.location) map.panTo(c.place.location); openGasInfo(c,c._marker); }
+
+function openGasInfo(c,mk){
+  const p=c.place;
+  if(!gasInfo) gasInfo=new google.maps.InfoWindow();
+  const fo=p.fuelOptions; let rows='';
+  if(fo && fo.fuelPrices && fo.fuelPrices.length){
+    rows=fo.fuelPrices.map(fp=>{ const m=moneyLabel(fp);
+      return `<div style="display:flex;justify-content:space-between;gap:16px">
+        <span style="text-transform:capitalize;color:#555">${esc(String(fp.type||'').replace(/_/g,' ').toLowerCase())}</span>
+        <b>${m?m.label:'—'}</b></div>`; }).join('');
+  } else rows='<div style="color:#888">No live price available here</div>';
+  const loc=p.location;
+  const nav=p.googleMapsURI||`https://www.google.com/maps/dir/?api=1&destination=${loc.lat()},${loc.lng()}&travelmode=driving`;
+  gasInfo.setContent(`<div style="font-family:'IBM Plex Sans',sans-serif;min-width:180px;color:#111">
+    <div style="font-weight:700;margin-bottom:2px">${esc(p.displayName||'Gas station')}</div>
+    <div style="font-size:11px;color:#0d9488;margin-bottom:7px">▸ enter from the right · ${Math.round(c.off*3.281)} ft off route</div>
+    <div style="font-size:12.5px;line-height:1.6">${rows}</div>
+    <a href="${nav}" target="_blank" rel="noopener" style="display:inline-block;margin-top:9px;color:#2563eb;font-size:12px;text-decoration:none">Navigate to pump ↗</a>
+  </div>`);
+  gasInfo.open({map,anchor:mk});
+}
+
+function stripHtml(h){ const d=document.createElement('div'); d.innerHTML=h; return d.textContent||''; }
+function esc(s){ return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+/* keep raw response so DirectionsRenderer can draw any single alternative */
+const _origRouteAsync = routeAsync;
+routeAsync = function(req){
+  return _origRouteAsync(req).then(res=>{
+    res.routes.forEach(rt=> rt._raw = { ...res, routes:[rt] });
+    return res;
+  });
+};
+
+/* dark map style */
+const DARK_STYLE=[
+  {elementType:'geometry',stylers:[{color:'#1a1f27'}]},
+  {elementType:'labels.text.stroke',stylers:[{color:'#1a1f27'}]},
+  {elementType:'labels.text.fill',stylers:[{color:'#8b97a6'}]},
+  {featureType:'road',elementType:'geometry',stylers:[{color:'#2a323d'}]},
+  {featureType:'road',elementType:'geometry.stroke',stylers:[{color:'#232a33'}]},
+  {featureType:'road.highway',elementType:'geometry',stylers:[{color:'#3a4351'}]},
+  {featureType:'road.highway',elementType:'geometry.stroke',stylers:[{color:'#2a323d'}]},
+  {featureType:'water',elementType:'geometry',stylers:[{color:'#0e1116'}]},
+  {featureType:'poi',stylers:[{visibility:'off'}]},
+  {featureType:'transit',stylers:[{visibility:'off'}]},
+  {featureType:'administrative',elementType:'geometry',stylers:[{color:'#2a323d'}]},
+  {featureType:'landscape',elementType:'geometry',stylers:[{color:'#161b22'}]}
+];
+</script>
+</body>
+</html>
