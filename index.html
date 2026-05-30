@@ -236,7 +236,7 @@
 <!-- ============ APP ============ -->
 <header style="display:none" id="hdr">
   <div class="logo"><span class="dot"></span>SafeRoute</div>
-  <span class="tag">tricky-intersection router · build reroute-link-fix</span>
+  <span class="tag">tricky-intersection router · build reroute-trace</span>
   <span class="spacer"></span>
   <button class="linkbtn" id="changekey">change key</button>
 </header>
@@ -806,7 +806,8 @@ function renderResults(){
           : '<p class="note" style="margin:0 0 11px">No left turns or U-turns on this route — clean run.</p>'}
         <a class="btn opengm" target="_blank" rel="noopener" href="${gmapsLink(r)}">Open in Google Maps ↗</a>
         <button class="btn btn-ghost blockbtn" onclick="event.stopPropagation();armBlockMode()" style="margin-top:8px;width:100%">🚫 Block a turn → reroute</button>
-        ${routeNeedsStop(r)?'<p class="note" style="margin:7px 0 0;text-align:center">Adds one waypoint so Maps follows this exact (non-default) route. Turn off “Force my exact route” in Preferences for a clean link.</p>':''}
+        ${r.rerouted&&r.viaList?`<p class="note" style="margin:7px 0 0;text-align:center">Opens with ${r.viaList.length} stop${r.viaList.length>1?'s':''} that trace the road past the blocked turn — that's what keeps Maps from doubling back.</p>`
+          : routeNeedsStop(r)?'<p class="note" style="margin:7px 0 0;text-align:center">Adds one waypoint so Maps follows this exact (non-default) route. Turn off “Force my exact route” in Preferences for a clean link.</p>':''}
       </div>`;
     card.onclick=(e)=>{ if(e.target.closest('.opengm')||e.target.closest('.turn')||e.target.closest('.blockbtn'))return; selectRoute(i); };
     el.appendChild(card);
@@ -964,17 +965,21 @@ async function addRerouteResult(best, note){
   const base=routes[selectedIdx];
   const newR=analyzeRoute(best.res.routes[0], routes.length);
   newR.rerouted=true;
-  // Deep-link waypoint: a point ON the new route, ~1 km PAST the blocked turn, so Google Maps
-  // (which treats every waypoint as a STOP) goes straight to it instead of U-turning back.
+  // Deep-link waypoints: sample the REAL rerouted path at a few points PAST the blocked turn.
+  // Google treats each as a stop, so tracing several keeps it pinned to the straight road
+  // long enough that it can't double back into the turn on the final leg.
   try{
     const np=newR.route.overview_path;
     const ncum=[0]; for(let k=1;k<np.length;k++) ncum[k]=ncum[k-1]+geometry.computeDistanceBetween(np[k-1],np[k]);
     const total=ncum[ncum.length-1];
     let bi=0,bd=Infinity;
     for(let k=0;k<np.length;k++){ const d=geometry.computeDistanceBetween(np[k],best.T); if(d<bd){bd=d;bi=k;} }
-    const target=Math.min(ncum[bi]+1000, total-150);     // 1 km past the turn, but not the destination
-    newR.via = pointAtDist(np, ncum, Math.max(0,target));
-  }catch(e){ newR.via = best.via; }
+    const turnAlong=ncum[bi];
+    const pts=[];
+    [800, 2500, 5000].forEach(d=>{ const a=turnAlong+d; if(a < total-200) pts.push(pointAtDist(np,ncum,a)); });
+    if(!pts.length) pts.push(pointAtDist(np,ncum,Math.min(turnAlong+800,total-150)));
+    newR.viaList = pts;
+  }catch(e){ newR.viaList = best.via?[best.via]:[]; }
   let signals=[];
   if(newR.turns.length){ try{ signals=await fetchSignals(newR.turns); }catch(e){} }
   newR.turns.forEach(tt=>{ tt.controlled=signals.length?nearestWithin(tt.pos,signals,SIGNAL_RADIUS):false; tt.signalsKnown=signals.length>0; });
@@ -1023,10 +1028,11 @@ function gmapsLink(r){
   const av=[]; if(cfg.avoidTolls)av.push('tolls'); if(cfg.avoidHighways)av.push('highways'); if(cfg.avoidFerries)av.push('ferries');
   if(av.length) u+=`&avoid=${av.join(',')}`;
 
-  // A rerouted route carries its own via point (always — it's the point of the reroute);
+  // A rerouted route carries its own waypoints (always — they're the point of the reroute);
   // otherwise nudge an alternative with one midpoint when forcing the exact route.
-  if(r.via){
-    u+=`&waypoints=${encodeURIComponent(`${r.via.lat().toFixed(6)},${r.via.lng().toFixed(6)}`)}`;
+  const wps = (r.viaList&&r.viaList.length) ? r.viaList : (r.via?[r.via]:null);
+  if(wps){
+    u+=`&waypoints=${encodeURIComponent(wps.map(p=>`${p.lat().toFixed(6)},${p.lng().toFixed(6)}`).join('|'))}`;
   } else if(cfg.forceRoute && r.idx!==0 && path.length>4){
     const mid=path[Math.floor(path.length/2)];
     const wp=snapToStep(r.leg, mid) || mid;
@@ -1035,7 +1041,7 @@ function gmapsLink(r){
   return u;
 }
 function routeNeedsStop(r){
-  return r.via || (cfg.forceRoute && r.idx!==0 && (r.route.overview_path||[]).length>4);
+  return (r.viaList&&r.viaList.length) || r.via || (cfg.forceRoute && r.idx!==0 && (r.route.overview_path||[]).length>4);
 }
 /* nearest step start_location to a point — puts the forced waypoint on a real maneuver */
 function snapToStep(leg, pt){
