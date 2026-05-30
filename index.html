@@ -152,6 +152,7 @@
   .rcard .name{font-weight:600;font-size:13.5px;display:flex;align-items:center;gap:8px}
   .badge{font-size:10px;font-weight:600;padding:2px 7px;border-radius:20px;letter-spacing:.3px}
   .badge.best{background:var(--safe-d);color:var(--safe)}
+  .badge.re{background:rgba(248,81,73,.14);color:var(--danger)}
   .rcard .eta{font-family:"IBM Plex Mono",monospace;font-size:13px;color:var(--txt)}
   .rcard .eta .sm{color:var(--faint);font-size:11px}
   .scorebar{height:6px;border-radius:4px;background:var(--bg);margin:11px 0 9px;overflow:hidden}
@@ -163,7 +164,9 @@
   .detail{margin-top:11px;border-top:1px solid var(--line);padding-top:11px;display:none}
   .rcard.sel .detail{display:block}
   .turnlist{display:flex;flex-direction:column;gap:6px;max-height:200px;overflow-y:auto;margin-bottom:11px}
-  .turn{display:flex;align-items:center;gap:9px;font-size:11.5px;padding:5px 7px;border-radius:6px;background:var(--bg)}
+  .turn{display:flex;align-items:center;gap:9px;font-size:11.5px;padding:5px 7px;border-radius:6px;background:var(--bg);cursor:pointer;transition:background .12s}
+  .turn:hover{background:var(--bg3)}
+  .turn::after{content:"⤢";margin-left:auto;color:var(--faint);font-size:11px;opacity:.6}
   .turn .ic{width:16px;text-align:center;flex-shrink:0}
   .turn.bad{background:var(--danger-d)} .turn.bad .ic{color:var(--danger)}
   .turn.mid{background:var(--caution-d)} .turn.mid .ic{color:var(--caution)}
@@ -197,6 +200,11 @@
   .gmeta{font-size:11px;color:var(--dim);margin-top:2px;font-family:"IBM Plex Mono",monospace}
   .gprice{font-family:"IBM Plex Mono",monospace;font-size:15px;font-weight:600;color:#2dd4bf;white-space:nowrap}
   .gprice .na{font-size:11px;color:var(--faint);font-weight:400}
+  .exithead{font-size:10px;color:var(--caution);text-transform:uppercase;letter-spacing:.5px;
+    margin-top:6px;padding-top:8px;border-top:1px dashed var(--line)}
+  .gasrow.exit:hover{border-color:var(--caution)}
+  .exitpill{font-size:9.5px;font-weight:600;color:var(--caution);border:1px solid var(--caution);
+    border-radius:20px;padding:1px 6px;letter-spacing:.3px}
 
   @media(max-width:760px){
     main{flex-direction:column} #panel{width:100%;border-right:none;border-bottom:1px solid var(--line);max-height:55%}
@@ -228,7 +236,7 @@
 <!-- ============ APP ============ -->
 <header style="display:none" id="hdr">
   <div class="logo"><span class="dot"></span>SafeRoute</div>
-  <span class="tag">tricky-intersection router · build prefs-visible</span>
+  <span class="tag">tricky-intersection router · build prefer-main</span>
   <span class="spacer"></span>
   <button class="linkbtn" id="changekey">change key</button>
 </header>
@@ -266,6 +274,7 @@
         <label class="check"><input type="checkbox" id="avhwy"> Avoid highways</label>
         <label class="check"><input type="checkbox" id="avferry"> Avoid ferries</label>
         <label class="check"><input type="checkbox" id="rndabt"> Also avoid roundabouts</label>
+        <label class="check"><input type="checkbox" id="prefermain" checked> Prefer straight main-road path <span style="color:var(--faint)">(fewer turns / cut-throughs)</span></label>
         <label class="check"><input type="checkbox" id="forceroute" checked> Force my exact route in Google Maps <span style="color:var(--faint)">(adds a stop)</span></label>
         <p class="note">A turn is treated as “controlled” if a traffic signal sits within ~35 m of it. Avoid options also carry into the Google Maps hand-off link.</p>
       </div>
@@ -308,11 +317,12 @@
 const LS_KEY = 'saferoute.gmapskey';
 let map, dirService, renderer, geometry, geocoder;
 let turnMarkers = [], routePolys = [], routes = [], selectedIdx = 0;
+let turnInfo = null;
 let gasMarkers = [], gasInfo = null;
 let originCoords = null;        // set when "Use my location" is tapped; cleared on manual edit
 let destCoords   = null;        // set when a destination suggestion is picked
 let cfg = { side:'left', timew:0.4, roundabout:false,
-            avoidTolls:false, avoidHighways:false, avoidFerries:false, forceRoute:true };
+            avoidTolls:false, avoidHighways:false, avoidFerries:false, forceRoute:true, preferMain:true };
 
 const SIGNAL_RADIUS = 35;       // metres: turn counts as "controlled" if a signal is this close
 const WEIGHTS = {
@@ -433,6 +443,7 @@ window.initApp = function(){
   $('#avhwy').onchange   = e=> cfg.avoidHighways = e.target.checked;
   $('#avferry').onchange = e=> cfg.avoidFerries = e.target.checked;
   $('#forceroute').onchange = e=> cfg.forceRoute = e.target.checked;
+  $('#prefermain').onchange = e=> cfg.preferMain = e.target.checked;
   $('#go').onclick = run;
   $('#gasbtn').onclick = findGas;
 
@@ -641,13 +652,7 @@ async function run(){
   });
 
   // safety component + time penalty (time scaled by slider)
-  const fastest = Math.min(...routes.map(r=>r.durSec));
-  routes.forEach(r=>{
-    const extraMin = (r.durSec - fastest)/60;
-    r.total = r.safety + WEIGHTS.perMinute * extraMin * cfg.timew * 4; // *4 makes slider meaningful
-  });
-  routes.sort((a,b)=> a.total-b.total);
-  routes.forEach((r,i)=> r.rank=i);
+  rankRoutes();
   selectedIdx = 0;
 
   $('#go').disabled=false; scrim(false);
@@ -656,6 +661,19 @@ async function run(){
             !signalsOK && false);
   renderResults();
   selectRoute(0);
+}
+
+/* score = unprotected-turn penalty + time penalty (scaled by the safety/speed slider), then sort */
+function rankRoutes(){
+  const fastest = Math.min(...routes.map(r=>r.durSec));
+  const leastWindy = Math.min(...routes.map(r=>r.windiness));
+  routes.forEach(r=>{
+    const extraMin = (r.durSec - fastest)/60;
+    r.total = r.safety + WEIGHTS.perMinute * extraMin * cfg.timew * 4;
+    if(cfg.preferMain) r.total += (r.windiness - leastWindy) * 1.5;   // favour the straight main-road path
+  });
+  routes.sort((a,b)=> a.total-b.total);
+  routes.forEach((r,i)=> r.rank=i);
 }
 
 function routeAsync(req){
@@ -689,8 +707,17 @@ function analyzeRoute(route,i){
       text: stripHtml(step.instructions||'').slice(0,80)
     });
   });
+  // directness: how many turns + short hops (windy cut-throughs have lots of both)
+  let turnCount=0, shortSteps=0;
+  const steps=leg.steps||[];
+  steps.forEach((s,idx)=>{
+    if(s.maneuver && /^(turn|uturn|fork|roundabout)/.test(s.maneuver)) turnCount++;
+    const d=(s.distance&&s.distance.value)||0;
+    if(d>0 && d<160 && idx>0 && idx<steps.length-1) shortSteps++;   // mid-route short segment
+  });
   return {
     route, idx:i, leg, turns,
+    turnCount, windiness: turnCount + shortSteps,
     durSec: (leg.duration_in_traffic||leg.duration).value,
     durTxt: (leg.duration_in_traffic||leg.duration).text,
     distTxt: leg.distance.text
@@ -764,7 +791,7 @@ function renderResults(){
     card.className='rcard'+(i===selectedIdx?' sel':'');
     card.innerHTML=`
       <div class="top">
-        <div class="name">Route ${i+1}${i===0?'<span class="badge best">RECOMMENDED</span>':''}</div>
+        <div class="name">${r.rerouted?'Reroute':'Route '+(i+1)}${i===0?' <span class="badge best">RECOMMENDED</span>':''}${r.rerouted?' <span class="badge re">EXPERIMENTAL</span>':''}</div>
         <div class="eta">${r.durTxt}<span class="sm"> · ${r.distTxt}</span></div>
       </div>
       <div class="scorebar"><i style="width:${Math.max(4,pct)}%;background:${col}"></i></div>
@@ -772,6 +799,7 @@ function renderResults(){
         <span class="danger">unprotected <b>${r.unprot}</b></span>
         <span class="caution">U-turns <b>${r.uturns}</b></span>
         <span>at signals <b>${r.ctrl}</b></span>
+        <span>turns <b>${r.turnCount}</b></span>
       </div>
       <div class="detail">
         ${r.turns.length? '<div class="turnlist">'+r.turns.map(turnRow).join('')+'</div>'
@@ -801,7 +829,8 @@ function selectRoute(i){
   renderer.setDirections(r.route._raw || r.rawResponse || fakeWrap(r));
   // draw markers on this route's tricky turns
   turnMarkers.forEach(m=>m.setMap(null)); turnMarkers=[];
-  r.turns.forEach(t=>{
+  if(turnInfo) turnInfo.close();
+  r.turns.forEach((t,ti)=>{
     let color;
     if(t.kind==='uturn') color='#e3a008';
     else if(t.kind==='roundabout') color='#3fb950';
@@ -809,11 +838,108 @@ function selectRoute(i){
     const mk=new google.maps.Marker({position:t.pos,map,
       icon:{path:google.maps.SymbolPath.CIRCLE,scale:6,fillColor:color,fillOpacity:1,strokeColor:'#0e1116',strokeWeight:2},
       zIndex:999});
+    mk.addListener('click',()=>focusTurn(ti));
     turnMarkers.push(mk);
   });
+  // make the turn rows in this card tap-to-zoom
+  const card=document.querySelectorAll('.rcard')[i];
+  if(card) card.querySelectorAll('.detail .turn').forEach((el,ti)=>{ el.onclick=()=>focusTurn(ti); });
   // gas results belong to a specific route — reset when the selection changes
   clearGas();
   $('#gasblock').style.display='block';
+}
+
+/* zoom the map to a tricky turn and label it */
+function focusTurn(ti){
+  const mk=turnMarkers[ti], t=routes[selectedIdx].turns[ti];
+  if(!mk||!t) return;
+  map.panTo(mk.getPosition()); map.setZoom(17);
+  if(!turnInfo) turnInfo=new google.maps.InfoWindow();
+  let label='Turn';
+  if(t.kind==='uturn') label='U-turn';
+  else if(t.kind==='roundabout') label='Roundabout';
+  else label = (t.signalsKnown&&t.controlled)?'Turn at a signal':(t.signalsKnown?'Unprotected turn (no signal)':'Turn — signal unknown');
+  const avoidable = (t.kind==='uturn') || (t.kind==='hard' && !(t.signalsKnown&&t.controlled));
+  const btn = avoidable
+    ? `<button onclick="tryAvoidTurn(${ti})" style="margin-top:9px;width:100%;background:#f85149;color:#fff;border:none;border-radius:7px;padding:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">⟳ Try to avoid this turn (experimental)</button>`
+    : '';
+  turnInfo.setContent(`<div style="font-family:'IBM Plex Sans',sans-serif;color:#111;max-width:220px">
+    <b>${esc(label)}</b><div style="font-size:12px;color:#555;margin-top:2px">${esc(t.text)}</div>${btn}</div>`);
+  turnInfo.open({map,anchor:mk});
+}
+
+/* EXPERIMENTAL: try to find a route that drops this specific turn by nudging a "via" point.
+   Hit-or-miss by nature — Google has no "don't make this turn" input, so we probe a few
+   via points, re-route through each, and keep a result only if it genuinely improves. */
+async function tryAvoidTurn(ti){
+  const base = routes[selectedIdx];
+  const turn = base && base.turns[ti];
+  if(!turn){ return; }
+  if(turnInfo) turnInfo.close();
+  scrim(true,'Probing alternative approaches…'); setStatus('');
+
+  const O=base.leg.start_location, D=base.leg.end_location, T=turn.pos;
+  const path=base.route.overview_path;
+  // approach heading (direction of travel into the turn)
+  let bi=0,bd=Infinity;
+  for(let k=0;k<path.length;k++){ const d=geometry.computeDistanceBetween(path[k],T); if(d<bd){bd=d;bi=k;} }
+  const a=path[Math.max(0,bi-1)], b=path[Math.min(path.length-1,bi)] ;
+  const approach=geometry.computeHeading(a,b);
+  const off=(dist,hdg)=>geometry.computeOffset(T,dist,hdg);
+  // candidates: keep going past the turn, or pull to either side, at two distances
+  const vias=[ off(300,approach), off(550,approach),
+               off(250,approach+90), off(250,approach-90),
+               off(450,approach+90), off(450,approach-90) ];
+
+  const baseHard = hardTurnCount(base.leg);
+  let best=null;
+  for(const via of vias){
+    let res;
+    try{
+      res=await routeAsync({ origin:O, destination:D, travelMode:'DRIVING',
+        provideRouteAlternatives:false,
+        avoidTolls:cfg.avoidTolls, avoidHighways:cfg.avoidHighways, avoidFerries:cfg.avoidFerries,
+        waypoints:[{location:via, stopover:false}],
+        drivingOptions:{departureTime:new Date()} });
+    }catch(e){ continue; }
+    const leg=res.routes[0].legs[0];
+    const t=(leg.duration_in_traffic||leg.duration).value;
+    if(t > base.durSec*1.6) continue;                 // reject big detours
+    const hc=hardTurnCount(leg);
+    const still=hasTurnNear(leg,T);                    // did we actually drop the turn at T?
+    const score=(still?100:0) + hc + (t-base.durSec)/120;
+    if(!best || score<best.score) best={score,res,via,hc,still,t};
+  }
+
+  // accept only if the target turn is gone, or total hard turns dropped
+  if(!best || (best.still && best.hc>=baseHard)){
+    scrim(false);
+    setStatus('Couldn\u2019t beat the existing routes for that turn — Google keeps routing through it. Try a different alternative route.', true);
+    return;
+  }
+
+  // full analysis on the winner, then fold it into the ranked list
+  const newR=analyzeRoute(best.res.routes[0], routes.length);
+  newR.rerouted=true; newR.via=best.via;
+  let signals=[];
+  if(newR.turns.length){ try{ signals=await fetchSignals(newR.turns); }catch(e){} }
+  newR.turns.forEach(tt=>{ tt.controlled=signals.length?nearestWithin(tt.pos,signals,SIGNAL_RADIUS):false; tt.signalsKnown=signals.length>0; });
+  scoreRoute(newR);
+  routes.push(newR);
+  rankRoutes();
+
+  scrim(false);
+  const idx=routes.indexOf(newR);
+  const removed = best.still ? '' : ' — dropped that turn';
+  setStatus(`Reroute added${removed}: ${newR.unprot} unprotected vs ${base.unprot} before.`);
+  renderResults();
+  selectRoute(idx);
+}
+function hardTurnCount(leg){
+  let c=0; (leg.steps||[]).forEach(s=>{ const k=classify(s.maneuver); if(k==='hard'||k==='uturn') c++; }); return c;
+}
+function hasTurnNear(leg,T){
+  return (leg.steps||[]).some(s=>{ const k=classify(s.maneuver); return (k==='hard'||k==='uturn') && geometry.computeDistanceBetween(s.start_location,T)<45; });
 }
 
 /* renderer needs a full DirectionsResult; we kept the original — wrap a single route */
@@ -838,8 +964,10 @@ function gmapsLink(r){
   if(av.length) u+=`&avoid=${av.join(',')}`;
 
   // Google reproduces its own default route (r.idx===0) from origin+dest alone, so no stop needed.
-  // For an alternative, drop ONE waypoint at the midpoint (snapped to a real intersection) to coerce it.
-  if(cfg.forceRoute && r.idx!==0 && path.length>4){
+  // A rerouted route carries its own via point; otherwise nudge an alternative with one midpoint.
+  if(cfg.forceRoute && r.via){
+    u+=`&waypoints=${encodeURIComponent(`${r.via.lat().toFixed(6)},${r.via.lng().toFixed(6)}`)}`;
+  } else if(cfg.forceRoute && r.idx!==0 && path.length>4){
     const mid=path[Math.floor(path.length/2)];
     const wp=snapToStep(r.leg, mid) || mid;
     u+=`&waypoints=${encodeURIComponent(`${wp.lat().toFixed(6)},${wp.lng().toFixed(6)}`)}`;
@@ -847,7 +975,7 @@ function gmapsLink(r){
   return u;
 }
 function routeNeedsStop(r){
-  return cfg.forceRoute && r.idx!==0 && (r.route.overview_path||[]).length>4;
+  return cfg.forceRoute && (r.via || (r.idx!==0 && (r.route.overview_path||[]).length>4));
 }
 /* nearest step start_location to a point — puts the forced waypoint on a real maneuver */
 function snapToStep(leg, pt){
@@ -923,47 +1051,47 @@ async function findGas(){
     console.warn(e); return;
   }
 
-  // 2) keep only the ones on the enterable side, close to the route, and NOT on a highway
+  // 2) keep the enterable-side, close, surface-road ones; collect highway ones separately
   const wantRight = (cfg.side==='left');   // right-hand traffic → enter on the right
   const MAXOFF=320;                        // metres off the route
-  let cands=[], skippedHwy=0;
+  let cands=[], hwyCands=[];
   seen.forEach(p=>{
     if(!p.location) return;
     const g=sideAndDist(path,cum,p.location);
     const correct = wantRight ? g.side==='right' : g.side==='left';
     if(!(g.off<=MAXOFF && correct)) return;
     const hw=nearStepInfo(r.leg, p.location);
-    if(hw.highway){ skippedHwy++; return; }   // on a limited-access segment → needs an exit, not a right turn
-    cands.push({place:p, ...g});
+    if(hw.highway) hwyCands.push({place:p, ...g, exit:true});   // needs a ramp, not a right turn
+    else cands.push({place:p, ...g});
   });
-  cands.sort((a,b)=>a.along-b.along);
-  cands=cands.slice(0,12);                  // cap pricey detail lookups
+  cands.sort((a,b)=>a.along-b.along);    cands=cands.slice(0,12);
+  hwyCands.sort((a,b)=>a.along-b.along);  hwyCands=hwyCands.slice(0,6);
 
-  if(!cands.length){
-    btn.disabled=false; scrim(false);
-    if(skippedHwy){
-      setStatus(`${skippedHwy} station(s) sit on highway segments — they need an exit, not a right turn. None are a simple right-in here.`);
-      $('#gaslist').innerHTML='<div class="empty">Every nearby station is along a highway stretch of this route, so it can\'t be reached by just turning right. Try a route with more surface roads, or exit-based fuel stops in Google Maps.</div>';
-    } else {
-      setStatus('No gas on the correct side within ~320 m of this route.');
-      $('#gaslist').innerHTML='<div class="empty">Nothing on the right side near this route. Try another alternative route.</div>';
-    }
-    return;
-  }
-
-  // 3) fetch live prices (premium field) only for survivors
+  // 3) fetch details (prices) for everything we'll show — premium field, so it's capped above
   scrim(true,'Fetching live fuel prices…');
-  for(const c of cands){
+  for(const c of cands.concat(hwyCands)){
     try{ await c.place.fetchFields({fields:['displayName','formattedAddress','fuelOptions','rating','googleMapsURI','location']}); }
     catch(e){ console.warn('detail fail',e); }
   }
 
   btn.disabled=false; scrim(false);
+  const skippedHwy=hwyCands.length;
+  if(!cands.length && !hwyCands.length){
+    setStatus('No gas on the correct side within ~320 m of this route.');
+    $('#gaslist').innerHTML='<div class="empty">Nothing on the right side near this route. Try another alternative route.</div>';
+    return;
+  }
+  if(!cands.length){
+    setStatus(`No simple right-in stations — ${skippedHwy} need a highway exit (shown on the map).`);
+  }
   const priced=cands.filter(c=>bestFuel(c.place.fuelOptions)).length;
-  setStatus(`${cands.length} station(s) on the right · ${priced} with live prices`
-            + (skippedHwy?` · ${skippedHwy} skipped (highway/needs exit)`:'') + '.');
+  if(cands.length){
+    setStatus(`${cands.length} right-in station(s) · ${priced} priced`
+              + (skippedHwy?` · ${skippedHwy} more off an exit (on map)`:'') + '.');
+  }
   renderGasSummary(cands, total, path, cum);
   renderGas(cands);
+  renderExitGas(hwyCands);
 }
 
 /* point a given distance along the polyline */
@@ -1114,13 +1242,49 @@ function openGasInfo(c,mk){
   } else rows='<div style="color:#888">No live price available here</div>';
   const loc=p.location;
   const nav=p.googleMapsURI||`https://www.google.com/maps/dir/?api=1&destination=${loc.lat()},${loc.lng()}&travelmode=driving`;
+  const tag = c.exit
+    ? `<div style="font-size:11px;color:#b45309;margin-bottom:7px">⤴ needs a highway exit · ${Math.round(c.off*3.281)} ft off route</div>`
+    : `<div style="font-size:11px;color:#0d9488;margin-bottom:7px">▸ enter from the right · ${Math.round(c.off*3.281)} ft off route</div>`;
   gasInfo.setContent(`<div style="font-family:'IBM Plex Sans',sans-serif;min-width:180px;color:#111">
     <div style="font-weight:700;margin-bottom:2px">${esc(p.displayName||'Gas station')}</div>
-    <div style="font-size:11px;color:#0d9488;margin-bottom:7px">▸ enter from the right · ${Math.round(c.off*3.281)} ft off route</div>
+    ${tag}
     <div style="font-size:12.5px;line-height:1.6">${rows}</div>
     <a href="${nav}" target="_blank" rel="noopener" style="display:inline-block;margin-top:9px;color:#2563eb;font-size:12px;text-decoration:none">Navigate to pump ↗</a>
   </div>`);
   gasInfo.open({map,anchor:mk});
+}
+
+/* exit-only (highway) stations: amber markers + a small secondary list */
+function renderExitGas(hwyCands){
+  if(!hwyCands || !hwyCands.length) return;
+  const el=$('#gaslist');
+  const head=document.createElement('div');
+  head.className='exithead'; head.textContent='Off an exit — needs a ramp, not a right turn';
+  el.appendChild(head);
+  hwyCands.forEach(c=>{
+    const p=c.place, price=bestFuel(p.fuelOptions);
+    const name=p.displayName||'Gas station';
+    const miIn=(c.along/1609.34).toFixed(1);
+    const row=document.createElement('div'); row.className='gasrow exit';
+    row.innerHTML=`
+      <div class="gleft">
+        <div class="gname">${esc(name)} <span class="exitpill">⤴ EXIT</span></div>
+        <div class="gmeta">${miIn} mi in${p.rating?` · ★${p.rating}`:''}</div>
+      </div>
+      <div class="gprice">${price? esc(price.label) : '<span class="na">n/a</span>'}</div>`;
+    row.onclick=()=>focusGas(c);
+    el.appendChild(row);
+    addExitMarker(c, price);
+  });
+}
+function addExitMarker(c, price){
+  const p=c.place;
+  const mk=new google.maps.Marker({position:p.location, map,
+    icon:{path:google.maps.SymbolPath.CIRCLE,scale:6,fillColor:'#e3a008',fillOpacity:1,strokeColor:'#06120a',strokeWeight:2},
+    label: price?{text:price.label,color:'#1a1200',fontSize:'10px',fontWeight:'700'}:undefined,
+    title:(p.displayName||'Gas')+' — needs exit', zIndex:480});
+  mk.addListener('click',()=>openGasInfo(c,mk));
+  c._marker=mk; gasMarkers.push(mk);
 }
 
 function stripHtml(h){ const d=document.createElement('div'); d.innerHTML=h; return d.textContent||''; }
