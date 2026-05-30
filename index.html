@@ -236,7 +236,7 @@
 <!-- ============ APP ============ -->
 <header style="display:none" id="hdr">
   <div class="logo"><span class="dot"></span>SafeRoute</div>
-  <span class="tag">tricky-intersection router · build prefer-main</span>
+  <span class="tag">tricky-intersection router · build block-a-turn</span>
   <span class="spacer"></span>
   <button class="linkbtn" id="changekey">change key</button>
 </header>
@@ -805,9 +805,10 @@ function renderResults(){
         ${r.turns.length? '<div class="turnlist">'+r.turns.map(turnRow).join('')+'</div>'
           : '<p class="note" style="margin:0 0 11px">No left turns or U-turns on this route — clean run.</p>'}
         <a class="btn opengm" target="_blank" rel="noopener" href="${gmapsLink(r)}">Open in Google Maps ↗</a>
+        <button class="btn btn-ghost blockbtn" onclick="event.stopPropagation();armBlockMode()" style="margin-top:8px;width:100%">🚫 Block a turn → reroute</button>
         ${routeNeedsStop(r)?'<p class="note" style="margin:7px 0 0;text-align:center">Adds one waypoint so Maps follows this exact (non-default) route. Turn off “Force my exact route” in Preferences for a clean link.</p>':''}
       </div>`;
-    card.onclick=(e)=>{ if(e.target.closest('.opengm'))return; selectRoute(i); };
+    card.onclick=(e)=>{ if(e.target.closest('.opengm')||e.target.closest('.turn')||e.target.closest('.blockbtn'))return; selectRoute(i); };
     el.appendChild(card);
   });
 }
@@ -843,7 +844,9 @@ function selectRoute(i){
   });
   // make the turn rows in this card tap-to-zoom
   const card=document.querySelectorAll('.rcard')[i];
-  if(card) card.querySelectorAll('.detail .turn').forEach((el,ti)=>{ el.onclick=()=>focusTurn(ti); });
+  if(card) card.querySelectorAll('.detail .turn').forEach((el,ti)=>{
+    el.onclick=(e)=>{ e.stopPropagation(); focusTurn(ti); };
+  });
   // gas results belong to a specific route — reset when the selection changes
   clearGas();
   $('#gasblock').style.display='block';
@@ -868,30 +871,64 @@ function focusTurn(ti){
   turnInfo.open({map,anchor:mk});
 }
 
-/* EXPERIMENTAL: try to find a route that drops this specific turn by nudging a "via" point.
-   Hit-or-miss by nature — Google has no "don't make this turn" input, so we probe a few
-   via points, re-route through each, and keep a result only if it genuinely improves. */
 async function tryAvoidTurn(ti){
   const base = routes[selectedIdx];
   const turn = base && base.turns[ti];
   if(!turn){ return; }
   if(turnInfo) turnInfo.close();
   scrim(true,'Probing alternative approaches…'); setStatus('');
+  const approach = approachHeading(base, turn.pos);
+  const best = await searchReroute(turn.pos, approach, hasTurnNear);
+  scrim(false);
+  if(!best || (best.still && best.hc>=best.baseHard)){
+    setStatus('Couldn\u2019t beat the existing routes for that turn — Google keeps routing through it.', true);
+    return;
+  }
+  const idx = await addRerouteResult(best, best.still?'':'dropped that turn');
+  selectRoute(idx);
+}
 
-  const O=base.leg.start_location, D=base.leg.end_location, T=turn.pos;
-  const path=base.route.overview_path;
-  // approach heading (direction of travel into the turn)
-  let bi=0,bd=Infinity;
-  for(let k=0;k<path.length;k++){ const d=geometry.computeDistanceBetween(path[k],T); if(d<bd){bd=d;bi=k;} }
-  const a=path[Math.max(0,bi-1)], b=path[Math.min(path.length-1,bi)] ;
-  const approach=geometry.computeHeading(a,b);
-  const off=(dist,hdg)=>geometry.computeOffset(T,dist,hdg);
-  // candidates: keep going past the turn, or pull to either side, at two distances
-  const vias=[ off(300,approach), off(550,approach),
+/* Block-a-turn: arm, then tap the turn on the map; we reroute to continue past it. */
+let blockListener=null;
+function armBlockMode(){
+  if(turnInfo) turnInfo.close();
+  setStatus('Tap the turn on the map you want to skip — it’ll try to continue straight past it.');
+  try{ $('#map').style.cursor='crosshair'; }catch(e){}
+  if(blockListener) google.maps.event.removeListener(blockListener);
+  blockListener = map.addListener('click', ev=>{
+    google.maps.event.removeListener(blockListener); blockListener=null;
+    try{ $('#map').style.cursor=''; }catch(e){}
+    blockTurnAt(ev.latLng);
+  });
+}
+async function blockTurnAt(loc){
+  const base=routes[selectedIdx]; if(!base) return;
+  const steps=base.leg.steps||[];
+  let bestS=null,bd=Infinity;
+  steps.forEach(s=>{ const d=geometry.computeDistanceBetween(s.start_location,loc); if(d<bd){bd=d;bestS=s;} });
+  if(!bestS || bd>250){ setStatus('No turn near that tap — zoom in and tap right on the turn you want to skip.', true); return; }
+  const T=bestS.start_location;
+  const approach=approachHeading(base,T);
+  scrim(true,'Rerouting to skip that turn…'); setStatus('');
+  const best=await searchReroute(T, approach, hasAnyTurnNear);   // any turn, not just unprotected
+  scrim(false);
+  if(!best || best.still){
+    setStatus('Couldn\u2019t find a route that skips that turn within a reasonable detour.', true); return;
+  }
+  const idx=await addRerouteResult(best, 'skipped a turn');
+  selectRoute(idx);
+}
+
+/* shared probe: nudge a few via points past T, return the best re-route (or null).
+   stillFn(leg,T) decides whether the turn we're targeting is still present. */
+async function searchReroute(T, approach, stillFn){
+  const base=routes[selectedIdx];
+  const O=base.leg.start_location, D=base.leg.end_location;
+  const off=(d,h)=>geometry.computeOffset(T,d,h);
+  const vias=[ off(300,approach), off(550,approach), off(800,approach),
                off(250,approach+90), off(250,approach-90),
                off(450,approach+90), off(450,approach-90) ];
-
-  const baseHard = hardTurnCount(base.leg);
+  const baseHard=hardTurnCount(base.leg);
   let best=null;
   for(const via of vias){
     let res;
@@ -906,40 +943,43 @@ async function tryAvoidTurn(ti){
     const t=(leg.duration_in_traffic||leg.duration).value;
     if(t > base.durSec*1.6) continue;                 // reject big detours
     const hc=hardTurnCount(leg);
-    const still=hasTurnNear(leg,T);                    // did we actually drop the turn at T?
+    const still=stillFn(leg,T);
     const score=(still?100:0) + hc + (t-base.durSec)/120;
-    if(!best || score<best.score) best={score,res,via,hc,still,t};
+    if(!best || score<best.score) best={score,res,via,hc,still,t,baseHard};
   }
+  return best;
+}
 
-  // accept only if the target turn is gone, or total hard turns dropped
-  if(!best || (best.still && best.hc>=baseHard)){
-    scrim(false);
-    setStatus('Couldn\u2019t beat the existing routes for that turn — Google keeps routing through it. Try a different alternative route.', true);
-    return;
-  }
-
-  // full analysis on the winner, then fold it into the ranked list
+/* fold a winning reroute into the ranked list (full signal analysis); returns its index */
+async function addRerouteResult(best, note){
+  const base=routes[selectedIdx];
   const newR=analyzeRoute(best.res.routes[0], routes.length);
   newR.rerouted=true; newR.via=best.via;
   let signals=[];
   if(newR.turns.length){ try{ signals=await fetchSignals(newR.turns); }catch(e){} }
   newR.turns.forEach(tt=>{ tt.controlled=signals.length?nearestWithin(tt.pos,signals,SIGNAL_RADIUS):false; tt.signalsKnown=signals.length>0; });
   scoreRoute(newR);
-  routes.push(newR);
-  rankRoutes();
-
-  scrim(false);
-  const idx=routes.indexOf(newR);
-  const removed = best.still ? '' : ' — dropped that turn';
-  setStatus(`Reroute added${removed}: ${newR.unprot} unprotected vs ${base.unprot} before.`);
+  routes.push(newR); rankRoutes();
   renderResults();
-  selectRoute(idx);
+  setStatus(`Reroute added${note?` — ${note}`:''}: ${newR.unprot} unprotected · ${newR.turnCount} turns (was ${base.unprot} · ${base.turnCount}).`);
+  return routes.indexOf(newR);
+}
+
+function approachHeading(r, T){
+  const path=r.route.overview_path; let bi=0,bd=Infinity;
+  for(let k=0;k<path.length;k++){ const d=geometry.computeDistanceBetween(path[k],T); if(d<bd){bd=d;bi=k;} }
+  const a=path[Math.max(0,bi-1)], b=path[Math.min(path.length-1,bi)];
+  return geometry.computeHeading(a,b);
 }
 function hardTurnCount(leg){
   let c=0; (leg.steps||[]).forEach(s=>{ const k=classify(s.maneuver); if(k==='hard'||k==='uturn') c++; }); return c;
 }
 function hasTurnNear(leg,T){
   return (leg.steps||[]).some(s=>{ const k=classify(s.maneuver); return (k==='hard'||k==='uturn') && geometry.computeDistanceBetween(s.start_location,T)<45; });
+}
+function hasAnyTurnNear(leg,T){
+  return (leg.steps||[]).some(s=> s.maneuver && /^(turn|uturn|fork|roundabout|ramp)/.test(s.maneuver)
+            && geometry.computeDistanceBetween(s.start_location,T)<45);
 }
 
 /* renderer needs a full DirectionsResult; we kept the original — wrap a single route */
