@@ -115,11 +115,11 @@
   .pin.a{color:var(--accent)} .pin.b{color:var(--danger)}
 
   .settings{background:var(--bg2);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
-  .settings summary{padding:11px 14px;cursor:pointer;font-size:12.5px;color:var(--dim);
-    list-style:none;display:flex;align-items:center;gap:8px;user-select:none}
-  .settings summary::-webkit-details-marker{display:none}
-  .settings summary::before{content:"▸";font-size:10px;transition:transform .15s}
-  .settings[open] summary::before{transform:rotate(90deg)}
+  .prefbtn{width:100%;text-align:left;padding:11px 14px;font-size:12.5px;color:var(--dim);
+    background:none;border:none;cursor:pointer;font-family:inherit;display:flex;align-items:center;
+    gap:8px;user-select:none}
+  .prefbtn::before{content:"▸";font-size:10px;transition:transform .15s}
+  .prefbtn[aria-expanded="true"]::before{transform:rotate(90deg)}
   .settings .body{padding:4px 14px 14px;display:flex;flex-direction:column;gap:14px}
   .setrow label{font-size:12px;color:var(--dim);display:block;margin-bottom:6px}
   .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
@@ -243,9 +243,9 @@
         <input id="dest" type="text" placeholder="Address or place"></div>
     </div>
 
-    <details class="settings" open>
-      <summary>Preferences — avoid tolls / highways, safety vs. speed</summary>
-      <div class="body">
+    <div class="settings">
+      <button type="button" class="prefbtn" id="prefToggle" aria-expanded="true">Preferences — avoid tolls / highways, safety vs. speed</button>
+      <div class="body" id="prefBody">
         <div class="setrow">
           <label>Traffic side (which turn crosses oncoming traffic)</label>
           <div class="seg" id="side">
@@ -265,7 +265,7 @@
         <label class="check"><input type="checkbox" id="forceroute" checked> Force my exact route in Google Maps <span style="color:var(--faint)">(adds a stop)</span></label>
         <p class="note">A turn is treated as “controlled” if a traffic signal sits within ~35 m of it. Avoid options also carry into the Google Maps hand-off link.</p>
       </div>
-    </details>
+    </div>
 
     <button class="btn" id="go">Find safest route</button>
     <div id="status"></div>
@@ -430,6 +430,14 @@ window.initApp = function(){
   $('#forceroute').onchange = e=> cfg.forceRoute = e.target.checked;
   $('#go').onclick = run;
   $('#gasbtn').onclick = findGas;
+
+  // Preferences show/hide (custom toggle — robust across mobile browsers)
+  $('#prefToggle').onclick = ()=>{
+    const body=$('#prefBody'), btn=$('#prefToggle');
+    const open = btn.getAttribute('aria-expanded')==='true';
+    btn.setAttribute('aria-expanded', String(!open));
+    body.style.display = open ? 'none' : 'flex';
+  };
 
   // address autocomplete on both fields (keeps GPS + Enter-to-route working)
   attachAutocomplete($('#origin'), (place, text)=>{
