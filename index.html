@@ -236,7 +236,7 @@
 <!-- ============ APP ============ -->
 <header style="display:none" id="hdr">
   <div class="logo"><span class="dot"></span>SafeRoute</div>
-  <span class="tag">tricky-intersection router · build block-a-turn</span>
+  <span class="tag">tricky-intersection router · build block-dots</span>
   <span class="spacer"></span>
   <button class="linkbtn" id="changekey">change key</button>
 </header>
@@ -411,7 +411,7 @@ window.initApp = function(){
   dirService = new google.maps.DirectionsService();
   renderer = new google.maps.DirectionsRenderer({
     map, suppressMarkers:false, preserveViewport:false,
-    polylineOptions:{ strokeColor:'#58a6ff', strokeWeight:6, strokeOpacity:.9 }
+    polylineOptions:{ strokeColor:'#58a6ff', strokeWeight:6, strokeOpacity:.9, clickable:false }
   });
   geometry = google.maps.geometry.spherical;
   geocoder = new google.maps.Geocoder();
@@ -825,6 +825,7 @@ function turnRow(t){
 
 function selectRoute(i){
   selectedIdx=i;
+  disarmBlock();
   document.querySelectorAll('.rcard').forEach((c,j)=>c.classList.toggle('sel',j===i));
   const r=routes[i];
   renderer.setDirections(r.route._raw || r.rawResponse || fakeWrap(r));
@@ -888,26 +889,34 @@ async function tryAvoidTurn(ti){
   selectRoute(idx);
 }
 
-/* Block-a-turn: arm, then tap the turn on the map; we reroute to continue past it. */
-let blockListener=null;
+/* Block-a-turn: arm → drop a tappable dot on every turn (incl. normal ones) → tap one to skip it. */
+let blockMarkers=[], blockArmed=false;
 function armBlockMode(){
-  if(turnInfo) turnInfo.close();
-  setStatus('Tap the turn on the map you want to skip — it’ll try to continue straight past it.');
-  try{ $('#map').style.cursor='crosshair'; }catch(e){}
-  if(blockListener) google.maps.event.removeListener(blockListener);
-  blockListener = map.addListener('click', ev=>{
-    google.maps.event.removeListener(blockListener); blockListener=null;
-    try{ $('#map').style.cursor=''; }catch(e){}
-    blockTurnAt(ev.latLng);
-  });
-}
-async function blockTurnAt(loc){
+  if(blockArmed){ disarmBlock(); setStatus('Block cancelled.'); return; }
   const base=routes[selectedIdx]; if(!base) return;
+  if(turnInfo) turnInfo.close();
   const steps=base.leg.steps||[];
-  let bestS=null,bd=Infinity;
-  steps.forEach(s=>{ const d=geometry.computeDistanceBetween(s.start_location,loc); if(d<bd){bd=d;bestS=s;} });
-  if(!bestS || bd>250){ setStatus('No turn near that tap — zoom in and tap right on the turn you want to skip.', true); return; }
-  const T=bestS.start_location;
+  steps.forEach(s=>{
+    if(!s.maneuver || !/^(turn|uturn|fork|roundabout|ramp|keep|merge)/.test(s.maneuver)) return;
+    const mk=new google.maps.Marker({position:s.start_location, map,
+      icon:{path:google.maps.SymbolPath.CIRCLE,scale:7,fillColor:'#ffffff',fillOpacity:.95,strokeColor:'#f85149',strokeWeight:2},
+      zIndex:1200, title:'Tap to skip: '+stripHtml(s.instructions||'')});
+    mk.addListener('click',()=>blockManeuver(s));
+    blockMarkers.push(mk);
+  });
+  if(!blockMarkers.length){ setStatus('No turns on this route to block.'); return; }
+  blockArmed=true;
+  setStatus(`Tap a white dot — that's a turn to skip (${blockMarkers.length} on this route). Tap "Block a turn" again to cancel.`);
+  try{ const b=new google.maps.LatLngBounds(); base.route.overview_path.forEach(p=>b.extend(p)); map.fitBounds(b); }catch(e){}
+}
+function disarmBlock(){
+  blockArmed=false;
+  blockMarkers.forEach(m=>m.setMap(null)); blockMarkers=[];
+}
+async function blockManeuver(step){
+  disarmBlock();
+  const base=routes[selectedIdx]; if(!base) return;
+  const T=step.start_location;
   const approach=approachHeading(base,T);
   scrim(true,'Rerouting to skip that turn…'); setStatus('');
   const best=await searchReroute(T, approach, hasAnyTurnNear);   // any turn, not just unprotected
@@ -1030,6 +1039,7 @@ function snapToStep(leg, pt){
 /* ---------- utils ---------- */
 function clearMap(){
   turnMarkers.forEach(m=>m.setMap(null)); turnMarkers=[];
+  if(typeof disarmBlock==='function') disarmBlock();
   renderer.set('directions',null);
   clearGas();
   $('#gasblock').style.display='none';
