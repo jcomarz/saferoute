@@ -224,7 +224,7 @@
 <!-- ============ APP ============ -->
 <header style="display:none" id="hdr">
   <div class="logo"><span class="dot"></span>SafeRoute</div>
-  <span class="tag">tricky-intersection router</span>
+  <span class="tag">tricky-intersection router · build 2026-05-30</span>
   <span class="spacer"></span>
   <button class="linkbtn" id="changekey">change key</button>
 </header>
@@ -243,8 +243,8 @@
         <input id="dest" type="text" placeholder="Address or place"></div>
     </div>
 
-    <details class="settings">
-      <summary>Preferences</summary>
+    <details class="settings" open>
+      <summary>Preferences — avoid tolls / highways, safety vs. speed</summary>
       <div class="body">
         <div class="setrow">
           <label>Traffic side (which turn crosses oncoming traffic)</label>
@@ -258,8 +258,12 @@
           <input type="range" id="timew" min="0" max="100" value="40">
           <div class="rangelbls"><span>Fastest route</span><span>Safest route</span></div>
         </div>
+        <label class="check"><input type="checkbox" id="avtolls"> Avoid toll roads</label>
+        <label class="check"><input type="checkbox" id="avhwy"> Avoid highways</label>
+        <label class="check"><input type="checkbox" id="avferry"> Avoid ferries</label>
         <label class="check"><input type="checkbox" id="rndabt"> Also avoid roundabouts</label>
-        <p class="note">A turn is treated as “controlled” if a traffic signal sits within ~35 m of it.</p>
+        <label class="check"><input type="checkbox" id="forceroute" checked> Force my exact route in Google Maps <span style="color:var(--faint)">(adds a stop)</span></label>
+        <p class="note">A turn is treated as “controlled” if a traffic signal sits within ~35 m of it. Avoid options also carry into the Google Maps hand-off link.</p>
       </div>
     </details>
 
@@ -302,7 +306,8 @@ let turnMarkers = [], routePolys = [], routes = [], selectedIdx = 0;
 let gasMarkers = [], gasInfo = null;
 let originCoords = null;        // set when "Use my location" is tapped; cleared on manual edit
 let destCoords   = null;        // set when a destination suggestion is picked
-let cfg = { side:'left', timew:0.4, roundabout:false };
+let cfg = { side:'left', timew:0.4, roundabout:false,
+            avoidTolls:false, avoidHighways:false, avoidFerries:false, forceRoute:true };
 
 const SIGNAL_RADIUS = 35;       // metres: turn counts as "controlled" if a signal is this close
 const WEIGHTS = {
@@ -419,6 +424,10 @@ window.initApp = function(){
     $('#twlbl').textContent = v<20?'prioritise speed':v<45?'balanced':v<75?'favour safety':'safety first';
   };
   $('#rndabt').onchange = e=> cfg.roundabout = e.target.checked;
+  $('#avtolls').onchange = e=> cfg.avoidTolls = e.target.checked;
+  $('#avhwy').onchange   = e=> cfg.avoidHighways = e.target.checked;
+  $('#avferry').onchange = e=> cfg.avoidFerries = e.target.checked;
+  $('#forceroute').onchange = e=> cfg.forceRoute = e.target.checked;
   $('#go').onclick = run;
   $('#gasbtn').onclick = findGas;
 
@@ -590,6 +599,7 @@ async function run(){
   try{
     res = await routeAsync({ origin, destination:dest, travelMode:'DRIVING',
       provideRouteAlternatives:true,
+      avoidTolls:cfg.avoidTolls, avoidHighways:cfg.avoidHighways, avoidFerries:cfg.avoidFerries,
       drivingOptions:{ departureTime:new Date() } });
   }catch(err){
     $('#go').disabled=false; scrim(false);
@@ -754,6 +764,7 @@ function renderResults(){
         ${r.turns.length? '<div class="turnlist">'+r.turns.map(turnRow).join('')+'</div>'
           : '<p class="note" style="margin:0 0 11px">No left turns or U-turns on this route — clean run.</p>'}
         <a class="btn opengm" target="_blank" rel="noopener" href="${gmapsLink(r)}">Open in Google Maps ↗</a>
+        ${routeNeedsStop(r)?'<p class="note" style="margin:7px 0 0;text-align:center">Adds one waypoint so Maps follows this exact (non-default) route. Turn off “Force my exact route” in Preferences for a clean link.</p>':''}
       </div>`;
     card.onclick=(e)=>{ if(e.target.closest('.opengm'))return; selectRoute(i); };
     el.appendChild(card);
@@ -797,23 +808,42 @@ function fakeWrap(r){
   return { routes:[r.route], request:{travelMode:'DRIVING'} };
 }
 
-/* Google Maps deep link, nudged with mid-route waypoints so it reproduces THIS route */
+/* Google Maps deep link. Carries avoid options, and only injects a waypoint
+   when needed to force a NON-default route (avoids the surprise multi-stop trip). */
 function gmapsLink(r){
   const leg=r.leg;
   const o=leg.start_location, d=leg.end_location;
   const path=r.route.overview_path||[];
-  const wps=[];
-  if(path.length>6){
-    [Math.floor(path.length*0.33), Math.floor(path.length*0.66)].forEach(idx=>{
-      wps.push(`${path[idx].lat().toFixed(6)},${path[idx].lng().toFixed(6)}`);
-    });
-  }
+
   let u=`https://www.google.com/maps/dir/?api=1`
       +`&origin=${o.lat().toFixed(6)},${o.lng().toFixed(6)}`
       +`&destination=${d.lat().toFixed(6)},${d.lng().toFixed(6)}`
       +`&travelmode=driving`;
-  if(wps.length) u+=`&waypoints=${encodeURIComponent(wps.join('|'))}`;
+
+  // avoidance carries into live navigation
+  const av=[]; if(cfg.avoidTolls)av.push('tolls'); if(cfg.avoidHighways)av.push('highways'); if(cfg.avoidFerries)av.push('ferries');
+  if(av.length) u+=`&avoid=${av.join(',')}`;
+
+  // Google reproduces its own default route (r.idx===0) from origin+dest alone, so no stop needed.
+  // For an alternative, drop ONE waypoint at the midpoint (snapped to a real intersection) to coerce it.
+  if(cfg.forceRoute && r.idx!==0 && path.length>4){
+    const mid=path[Math.floor(path.length/2)];
+    const wp=snapToStep(r.leg, mid) || mid;
+    u+=`&waypoints=${encodeURIComponent(`${wp.lat().toFixed(6)},${wp.lng().toFixed(6)}`)}`;
+  }
   return u;
+}
+function routeNeedsStop(r){
+  return cfg.forceRoute && r.idx!==0 && (r.route.overview_path||[]).length>4;
+}
+/* nearest step start_location to a point — puts the forced waypoint on a real maneuver */
+function snapToStep(leg, pt){
+  let best=null,bd=Infinity;
+  (leg.steps||[]).forEach(s=>{
+    const dd=geometry.computeDistanceBetween(s.start_location,pt);
+    if(dd<bd){bd=dd;best=s.start_location;}
+  });
+  return best;
 }
 
 /* ---------- utils ---------- */
