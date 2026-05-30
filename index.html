@@ -81,6 +81,7 @@
   main{flex:1;display:flex;min-height:0}
   #panel{width:400px;flex-shrink:0;background:var(--bg);border-right:1px solid var(--line);
     overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:14px}
+  #panel>*{flex-shrink:0}   /* never crush a child to fit; let the panel scroll instead */
   #mapwrap{flex:1;position:relative;min-width:0}
   #map{position:absolute;inset:0}
 
@@ -227,7 +228,7 @@
 <!-- ============ APP ============ -->
 <header style="display:none" id="hdr">
   <div class="logo"><span class="dot"></span>SafeRoute</div>
-  <span class="tag">tricky-intersection router · build coverage-summary</span>
+  <span class="tag">tricky-intersection router · build prefs-visible</span>
   <span class="spacer"></span>
   <button class="linkbtn" id="changekey">change key</button>
 </header>
