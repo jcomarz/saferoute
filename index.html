@@ -182,6 +182,9 @@
 
   /* gas on route */
   .gasblock{display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--line);padding-top:14px}
+  .gassummary{font-size:12px;color:var(--dim);background:var(--bg2);border:1px solid var(--line);
+    border-radius:8px;padding:9px 11px;line-height:1.5}
+  .gassummary b{color:var(--txt);font-family:"IBM Plex Mono",monospace}
   #gaslist{display:flex;flex-direction:column;gap:7px}
   .gasrow{display:flex;align-items:center;justify-content:space-between;gap:10px;
     background:var(--bg2);border:1px solid var(--line);border-radius:var(--radius);
@@ -224,7 +227,7 @@
 <!-- ============ APP ============ -->
 <header style="display:none" id="hdr">
   <div class="logo"><span class="dot"></span>SafeRoute</div>
-  <span class="tag">tricky-intersection router · build 2026-05-30</span>
+  <span class="tag">tricky-intersection router · build coverage-summary</span>
   <span class="spacer"></span>
   <button class="linkbtn" id="changekey">change key</button>
 </header>
@@ -283,6 +286,7 @@
     <div class="gasblock" id="gasblock" style="display:none">
       <button class="btn btn-ghost" id="gasbtn">⛽ Find gas on this route — right side only</button>
       <p class="note">Live fuel prices from Google (premium data — a small per-search cost). Only shows stations you can pull into without crossing oncoming traffic.</p>
+      <div id="gassummary" class="gassummary" style="display:none"></div>
       <div id="gaslist"></div>
     </div>
   </section>
@@ -869,6 +873,7 @@ function clearGas(){
   gasMarkers.forEach(m=>m.setMap(null)); gasMarkers=[];
   if(gasInfo) gasInfo.close();
   $('#gaslist').innerHTML='';
+  const s=$('#gassummary'); if(s){ s.innerHTML=''; s.style.display='none'; }
 }
 
 async function findGas(){
@@ -917,23 +922,31 @@ async function findGas(){
     console.warn(e); return;
   }
 
-  // 2) keep only the ones on the enterable side, close to the route
+  // 2) keep only the ones on the enterable side, close to the route, and NOT on a highway
   const wantRight = (cfg.side==='left');   // right-hand traffic → enter on the right
   const MAXOFF=320;                        // metres off the route
-  let cands=[];
+  let cands=[], skippedHwy=0;
   seen.forEach(p=>{
     if(!p.location) return;
     const g=sideAndDist(path,cum,p.location);
     const correct = wantRight ? g.side==='right' : g.side==='left';
-    if(g.off<=MAXOFF && correct) cands.push({place:p, ...g});
+    if(!(g.off<=MAXOFF && correct)) return;
+    const hw=nearStepInfo(r.leg, p.location);
+    if(hw.highway){ skippedHwy++; return; }   // on a limited-access segment → needs an exit, not a right turn
+    cands.push({place:p, ...g});
   });
   cands.sort((a,b)=>a.along-b.along);
   cands=cands.slice(0,12);                  // cap pricey detail lookups
 
   if(!cands.length){
     btn.disabled=false; scrim(false);
-    setStatus('No gas on the correct side within ~320 m of this route.');
-    $('#gaslist').innerHTML='<div class="empty">Nothing on the right side near this route. Try another alternative route.</div>';
+    if(skippedHwy){
+      setStatus(`${skippedHwy} station(s) sit on highway segments — they need an exit, not a right turn. None are a simple right-in here.`);
+      $('#gaslist').innerHTML='<div class="empty">Every nearby station is along a highway stretch of this route, so it can\'t be reached by just turning right. Try a route with more surface roads, or exit-based fuel stops in Google Maps.</div>';
+    } else {
+      setStatus('No gas on the correct side within ~320 m of this route.');
+      $('#gaslist').innerHTML='<div class="empty">Nothing on the right side near this route. Try another alternative route.</div>';
+    }
     return;
   }
 
@@ -946,7 +959,9 @@ async function findGas(){
 
   btn.disabled=false; scrim(false);
   const priced=cands.filter(c=>bestFuel(c.place.fuelOptions)).length;
-  setStatus(`${cands.length} station(s) on the right · ${priced} with live prices.`);
+  setStatus(`${cands.length} station(s) on the right · ${priced} with live prices`
+            + (skippedHwy?` · ${skippedHwy} skipped (highway/needs exit)`:'') + '.');
+  renderGasSummary(cands, total, path, cum);
   renderGas(cands);
 }
 
@@ -961,19 +976,50 @@ function pointAtDist(path,cum,d){
   return path[path.length-1];
 }
 
-/* which side of the direction of travel a point sits on + how far off-route + distance along */
+/* which side of travel a station is on + perpendicular distance + distance along route.
+   Projects the station onto the NEAREST SEGMENT (local planar approx) so the side call
+   stays accurate through bends — important on surface streets. */
 function sideAndDist(path,cum,loc){
-  let bi=0,bd=Infinity;
-  for(let k=0;k<path.length;k++){
-    const dd=geometry.computeDistanceBetween(path[k],loc);
-    if(dd<bd){bd=dd;bi=k;}
+  const lat0=loc.lat()*Math.PI/180;
+  const mLat=110574, mLng=111320*Math.cos(lat0);
+  const X = ll => [ (ll.lng()-loc.lng())*mLng, (ll.lat()-loc.lat())*mLat ];  // metres east/north, loc at origin
+  let best={ off:Infinity, side:'right', along:0 };
+  for(let k=1;k<path.length;k++){
+    const A=X(path[k-1]), B=X(path[k]);
+    const ABx=B[0]-A[0], ABy=B[1]-A[1];
+    const len2=ABx*ABx+ABy*ABy;
+    let t = len2 ? ((-A[0])*ABx + (-A[1])*ABy)/len2 : 0;   // project origin onto A→B
+    t = Math.max(0, Math.min(1, t));
+    const Px=A[0]+t*ABx, Py=A[1]+t*ABy;
+    const d=Math.hypot(Px,Py);                              // perpendicular dist loc↔segment
+    if(d<best.off){
+      const cross = ABx*(-A[1]) - ABy*(-A[0]);              // sign of travel × (A→loc)
+      best={ off:d, side: cross<0 ? 'right':'left', along: cum[k-1] + t*Math.sqrt(len2) };
+    }
   }
-  let a=path[bi], b=path[Math.min(bi+1,path.length-1)];
-  if(bi===path.length-1 && bi>0){ a=path[bi-1]; b=path[bi]; }
-  const travel=geometry.computeHeading(a,b);          // direction of travel
-  const toPt  =geometry.computeHeading(path[bi],loc); // toward the station
-  let rel=toPt-travel; while(rel>180)rel-=360; while(rel<-180)rel+=360;
-  return { side: rel>=0?'right':'left', off:bd, along:cum[bi] };
+  return best;
+}
+
+/* nearest route step to a point + whether that step is a limited-access (highway) segment.
+   Heuristic: a step's average speed (distance/duration) on a freeway is high; surface streets
+   with signals average much lower. Backed up by interstate/ramp wording in the instruction. */
+function nearStepInfo(leg, loc){
+  if(!leg || !leg.steps || !leg.steps.length) return {highway:false};
+  let best=null,bd=Infinity;
+  leg.steps.forEach(s=>{
+    const d=Math.min(geometry.computeDistanceBetween(s.start_location,loc),
+                     geometry.computeDistanceBetween(s.end_location,loc));
+    if(d<bd){bd=d;best=s;}
+  });
+  if(!best) return {highway:false};
+  const dist=(best.distance&&best.distance.value)||0;
+  const dur =(best.duration&&best.duration.value)||1;
+  const speed = dur ? dist/dur : 0;                              // m/s
+  const instr = stripHtml(best.instructions||'').toLowerCase();
+  const highSpeed = speed >= 25;                                 // ~56 mph+ average ⇒ true limited-access (keeps fast local roads)
+  // only strong limited-access wording (avoid surface roads merely named "… Highway/Parkway")
+  const words = /(merge onto|take exit|exit \d|interstate|\bi-\d{1,3}\b|freeway|motorway|expressway|turnpike)/.test(instr);
+  return { highway: highSpeed || words, speed };
 }
 
 function bestFuel(fo){
@@ -991,6 +1037,38 @@ function moneyLabel(fp){
   const sym=({USD:'$',EUR:'€',GBP:'£',CAD:'$',AUD:'$'})[cur]||'';
   return { value:val, label:`${sym}${val.toFixed(2)}`,
            type:String(fp.type||'').replace(/_/g,' ').toLowerCase(), cur };
+}
+
+/* one-line coverage answer: typical spacing + the longest dry stretch (named) */
+function renderGasSummary(cands, total, path, cum){
+  const el=$('#gassummary'); if(!el) return;
+  const n=cands.length;
+  const mi = m => m/1609.34;
+  if(!n){ el.style.display='none'; return; }
+  el.style.display='block';
+  if(n===1){ el.innerHTML=`<b>1</b> right-side stop, about <b>${mi(cands[0].along).toFixed(1)} mi</b> in.`; return; }
+
+  const alongs=cands.map(c=>c.along).slice().sort((a,b)=>a-b);
+  const pts=[0,...alongs,total];
+  let maxGap=0, gapStart=0;
+  for(let i=1;i<pts.length;i++){ const g=pts[i]-pts[i-1]; if(g>maxGap){ maxGap=g; gapStart=pts[i-1]; } }
+  const every=mi(total/n), gap=mi(maxGap);
+  el.innerHTML=`Right-side gas about <b>every ${every.toFixed(1)} mi</b> · longest gap <b>${gap.toFixed(1)} mi</b><span id="gapwhere"></span>.`;
+
+  if(gapStart<200){ const w=$('#gapwhere'); if(w) w.textContent=' from the start'; return; }
+  try{
+    const gp=pointAtDist(path,cum,gapStart);
+    geocoder.geocode({location:gp},(res,status)=>{
+      const w=$('#gapwhere'); if(!w) return;
+      if(status==='OK'&&res&&res[0]){ const nm=localityName(res[0]); if(nm) w.textContent=` after ${nm}`; }
+    });
+  }catch(e){}
+}
+function localityName(result){
+  const comp=result.address_components||[];
+  const pick=t=>{ const c=comp.find(x=>x.types.includes(t)); return c&&c.long_name; };
+  return pick('locality')||pick('sublocality')||pick('neighborhood')
+       ||pick('administrative_area_level_2')|| (result.formatted_address||'').split(',')[0];
 }
 
 function renderGas(cands){
