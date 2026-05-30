@@ -236,7 +236,7 @@
 <!-- ============ APP ============ -->
 <header style="display:none" id="hdr">
   <div class="logo"><span class="dot"></span>SafeRoute</div>
-  <span class="tag">tricky-intersection router · build block-dots</span>
+  <span class="tag">tricky-intersection router · build reroute-link-fix</span>
   <span class="spacer"></span>
   <button class="linkbtn" id="changekey">change key</button>
 </header>
@@ -954,7 +954,7 @@ async function searchReroute(T, approach, stillFn){
     const hc=hardTurnCount(leg);
     const still=stillFn(leg,T);
     const score=(still?100:0) + hc + (t-base.durSec)/120;
-    if(!best || score<best.score) best={score,res,via,hc,still,t,baseHard};
+    if(!best || score<best.score) best={score,res,via,hc,still,t,baseHard,T};
   }
   return best;
 }
@@ -963,7 +963,18 @@ async function searchReroute(T, approach, stillFn){
 async function addRerouteResult(best, note){
   const base=routes[selectedIdx];
   const newR=analyzeRoute(best.res.routes[0], routes.length);
-  newR.rerouted=true; newR.via=best.via;
+  newR.rerouted=true;
+  // Deep-link waypoint: a point ON the new route, ~1 km PAST the blocked turn, so Google Maps
+  // (which treats every waypoint as a STOP) goes straight to it instead of U-turning back.
+  try{
+    const np=newR.route.overview_path;
+    const ncum=[0]; for(let k=1;k<np.length;k++) ncum[k]=ncum[k-1]+geometry.computeDistanceBetween(np[k-1],np[k]);
+    const total=ncum[ncum.length-1];
+    let bi=0,bd=Infinity;
+    for(let k=0;k<np.length;k++){ const d=geometry.computeDistanceBetween(np[k],best.T); if(d<bd){bd=d;bi=k;} }
+    const target=Math.min(ncum[bi]+1000, total-150);     // 1 km past the turn, but not the destination
+    newR.via = pointAtDist(np, ncum, Math.max(0,target));
+  }catch(e){ newR.via = best.via; }
   let signals=[];
   if(newR.turns.length){ try{ signals=await fetchSignals(newR.turns); }catch(e){} }
   newR.turns.forEach(tt=>{ tt.controlled=signals.length?nearestWithin(tt.pos,signals,SIGNAL_RADIUS):false; tt.signalsKnown=signals.length>0; });
@@ -1012,9 +1023,9 @@ function gmapsLink(r){
   const av=[]; if(cfg.avoidTolls)av.push('tolls'); if(cfg.avoidHighways)av.push('highways'); if(cfg.avoidFerries)av.push('ferries');
   if(av.length) u+=`&avoid=${av.join(',')}`;
 
-  // Google reproduces its own default route (r.idx===0) from origin+dest alone, so no stop needed.
-  // A rerouted route carries its own via point; otherwise nudge an alternative with one midpoint.
-  if(cfg.forceRoute && r.via){
+  // A rerouted route carries its own via point (always — it's the point of the reroute);
+  // otherwise nudge an alternative with one midpoint when forcing the exact route.
+  if(r.via){
     u+=`&waypoints=${encodeURIComponent(`${r.via.lat().toFixed(6)},${r.via.lng().toFixed(6)}`)}`;
   } else if(cfg.forceRoute && r.idx!==0 && path.length>4){
     const mid=path[Math.floor(path.length/2)];
@@ -1024,7 +1035,7 @@ function gmapsLink(r){
   return u;
 }
 function routeNeedsStop(r){
-  return cfg.forceRoute && (r.via || (r.idx!==0 && (r.route.overview_path||[]).length>4));
+  return r.via || (cfg.forceRoute && r.idx!==0 && (r.route.overview_path||[]).length>4);
 }
 /* nearest step start_location to a point — puts the forced waypoint on a real maneuver */
 function snapToStep(leg, pt){
